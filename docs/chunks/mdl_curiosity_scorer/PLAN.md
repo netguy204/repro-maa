@@ -8,170 +8,150 @@ to hand to an agent.
 
 ## Approach
 
-<!--
-How will you build this? Describe the strategy at a high level.
-What patterns or techniques will you use?
-What existing code will you build on?
+Implement the MDL curiosity scorer as a pure-computation module with no dependency on TaskCell at runtime — it operates on plain `list[float]` reward windows. The core idea: compare the description length of the reward data under a **unimodal Gaussian model** (one cluster) vs. a **bimodal Gaussian model** (two clusters, hard assignment via optimal split). The curiosity score is the *improvement* in description length when switching from unimodal to bimodal — positive when the data genuinely has two modes (the learning frontier), zero when it doesn't (mastered or unreachable).
 
-Reference docs/trunk/DECISIONS.md entries where relevant.
-If this approach represents a new significant decision, ask the user
-if we should add it to DECISIONS.md and reference it here.
+**Mathematical formulation (BIC-based MDL):**
 
-Always include tests in your implementation plan and adhere to
-docs/trunk/TESTING_PHILOSOPHY.md in your planning.
+For n reward values with maximum-likelihood Gaussian parameters:
 
-Remember to update code_paths in the chunk's GOAL.md (e.g., docs/chunks/mdl_curiosity_scorer/GOAL.md)
-with references to the files that you expect to touch.
--->
+- **Description length** = negative log-likelihood + model complexity penalty
+  - Data cost: `(n/2)(1 + ln(2π σ²))` for n points with ML variance σ²
+  - Model cost (BIC): `(k/2) ln(n)` where k = number of free parameters
 
-## Subsystem Considerations
+- **Unimodal model** (k=2: μ, σ²):
+  - `L_uni = (n/2)(1 + ln(2π σ²_all)) + ln(n)`
 
-<!--
-Before designing your implementation, check docs/subsystems/ for relevant
-cross-cutting patterns.
+- **Bimodal model** (k=5: μ₁, σ₁², μ₂, σ₂², mixing weight π):
+  - Hard clustering: sort rewards, try every possible split point, pick the one minimizing total description length
+  - `L_bi = Σ_k [(n_k/2)(1 + ln(2π σ_k²))] + (5/2) ln(n)`
+  - The split-point search costs O(n log n) for the sort + O(n) for the scan — lightweight
 
-QUESTIONS TO CONSIDER:
-- Does this chunk touch any existing subsystem's scope?
-- Will this chunk implement part of a subsystem (contribute code) or use it
-  (depend on it)?
-- Did you discover code during exploration that should be part of a subsystem
-  but doesn't follow its patterns?
+- **Curiosity score** = `max(0, L_uni − L_bi)`
+  - Positive when bimodal explains the data better despite higher model cost
+  - Zero when the data is already well-explained by a single Gaussian
 
-If no subsystems are relevant, delete this section.
+**Zero-variance handling:** When all values in a cluster are identical (σ²=0), substitute a small epsilon (1e-10) to avoid `ln(0)`. This naturally yields very low data cost for uniform clusters, which is correct — uniform rewards are easy to describe.
 
-WHEN SUBSYSTEMS ARE RELEVANT:
-List each relevant subsystem with its status and your relationship:
-- **docs/subsystems/validation** (DOCUMENTED): This chunk USES the validation
-  subsystem to check input
-- **docs/subsystems/error_handling** (REFACTORING): This chunk IMPLEMENTS a
-  new error type following the subsystem's patterns
+**Edge cases:** Empty window → 0.0. Single element → 0.0 (cannot meaningfully compare models).
 
-HOW SUBSYSTEM STATUS AFFECTS YOUR WORK:
+This approach is:
+- **Fully deterministic** — no iterative EM, no random initialization. Given the same inputs, the output is identical.
+- **Pure numpy** — uses only `numpy` (already a project dependency). No new dependencies needed.
+- **Consistent with the testing philosophy** — the MDL computation is a deterministic algorithm with known correct behavior for synthetic inputs, making it ideal for TDD.
 
-DOCUMENTED subsystems: The subsystem's patterns are captured but deviations are not
-being actively fixed. If you discover code that deviates from the subsystem's
-patterns, add it to the subsystem's Known Deviations section. Do NOT prioritize
-fixing those deviations—your chunk has its own goals.
-
-REFACTORING subsystems: The subsystem is being actively consolidated. If your chunk
-work touches code that deviates from the subsystem's patterns, attempt to bring it
-into compliance as part of your work. This is "opportunistic improvement"—improve
-what you touch, but don't expand scope to fix unrelated deviations.
-
-WHEN YOU DISCOVER DEVIATING CODE:
-- Add it to the subsystem's Known Deviations section
-- Note whether you will address it (REFACTORING status + relevant to your work)
-  or leave it for future work (DOCUMENTED status or outside your chunk's scope)
-
-Example:
-- **Discovered deviation**: src/legacy/parser.py#validate_input does its own
-  validation instead of using the validation subsystem
-  - Added to docs/subsystems/validation Known Deviations
-  - Action: Will not address (subsystem is DOCUMENTED; deviation outside chunk scope)
--->
+Tests follow TDD per `docs/trunk/TESTING_PHILOSOPHY.md`: write failing tests for each success criterion first, then implement the scorer to make them pass. Tests use synthetic reward distributions with hand-computable expected behavior (not exact float values, but relational assertions: frontier > mastered, frontier > unreachable, monotonic decrease as cell transitions to mastered).
 
 ## Sequence
 
-<!--
-Ordered steps to implement this chunk. Each step should be:
-- Small enough to reason about in isolation
-- Large enough to be meaningful
-- Clear about its inputs and outputs
+### Step 1: Write failing tests for MDLScorer
 
-This sequence is your contract with yourself (and with agents).
-Work through it in order. Don't skip ahead.
+Create `tests/test_mdl_scorer.py` with tests covering all seven success criteria from GOAL.md. Tests should import `MDLScorer` from `repro_maa.mdl_scorer` (which doesn't exist yet — tests will fail on import).
 
-Example:
+Test cases:
 
-### Step 1: Define the SegmentHeader struct
+1. **`test_scorer_returns_float`** — `MDLScorer().score([1.0, 2.0, 3.0])` returns a float. *(Success criterion 1)*
+2. **`test_mastered_cell_scores_low`** — Uniform high rewards `[3.0] * 20` scores lower than a mixed window `[3.0, -3.0] * 10`. *(Criterion 2)*
+3. **`test_unreachable_cell_scores_low`** — Uniform low rewards `[-3.0] * 20` scores lower than a mixed window. *(Criterion 3)*
+4. **`test_frontier_cell_scores_highest`** — A 50/50 mix of `+3.0` and `-3.0` scores higher than both uniform-high and uniform-low windows. *(Criterion 4)*
+5. **`test_monotonic_decrease_toward_mastery`** — Start with 50% success, then 60%, 70%, 80%, 90%, 100%. Each step's score should be ≤ the previous. *(Criterion 5)*
+6. **`test_empty_window_returns_zero`** — `score([])` returns `0.0`. *(Criterion 6)*
+7. **`test_single_element_returns_zero`** — `score([3.0])` returns `0.0`. *(Criterion 6)*
+8. **`test_two_element_identical_returns_zero`** — `score([3.0, 3.0])` returns `0.0`. *(Edge case: unimodal is optimal)*
+9. **`test_two_element_different_returns_positive`** — `score([3.0, -3.0])` returns a positive value. *(Edge case: smallest bimodal window)*
+10. **`test_deterministic`** — Calling `score()` twice with the same input returns identical values. *(Implied by deterministic design)*
 
-Create the struct that represents a segment's header with fields for:
-- magic number (4 bytes)
-- version (2 bytes)
-- segment_id (8 bytes)
-- message_count (4 bytes)
-- checksum (4 bytes)
+Location: `tests/test_mdl_scorer.py`
 
-Location: src/segment/format.rs
+### Step 2: Create MDLScorer class skeleton
 
-### Step 2: Implement header serialization
+Create `src/repro_maa/mdl_scorer.py` with the `MDLScorer` class and a `score()` method that raises `NotImplementedError`. This makes the tests importable (they should now fail on assertions rather than import errors).
 
-Add `to_bytes()` and `from_bytes()` methods to SegmentHeader.
-Use little-endian encoding per SPEC.md Section 3.1.
+Add a module-level backreference comment: `# Chunk: docs/chunks/mdl_curiosity_scorer - MDL-based curiosity signal for curriculum selection`
 
-### Step 3: ...
+Location: `src/repro_maa/mdl_scorer.py`
+
+### Step 3: Implement unimodal description length
+
+Add a private method `_unimodal_mdl(self, rewards: np.ndarray) -> float` that computes the description length of the reward array under a single-Gaussian model:
+
+```
+n = len(rewards)
+var = np.var(rewards)  # ML variance (not Bessel-corrected)
+if var < EPSILON:
+    var = EPSILON
+data_cost = (n / 2) * (1 + np.log(2 * np.pi * var))
+model_cost = np.log(n)  # (2/2) * ln(n)
+return data_cost + model_cost
+```
+
+Location: `src/repro_maa/mdl_scorer.py`
+
+### Step 4: Implement bimodal description length
+
+Add a private method `_bimodal_mdl(self, rewards: np.ndarray) -> float` that:
+
+1. Sorts the reward array
+2. Iterates over all valid split points (index 1 through n-1), partitioning into left/right clusters
+3. For each split, computes per-cluster data cost using the same Gaussian encoding
+4. Adds the bimodal model cost: `(5/2) * ln(n)`
+5. Returns the minimum total description length across all splits
+
+Use cumulative sum/sum-of-squares for O(n) variance computation across all splits (avoid recomputing from scratch at each split point).
+
+Location: `src/repro_maa/mdl_scorer.py`
+
+### Step 5: Implement the score() method
+
+Wire everything together in `score(self, rewards: list[float]) -> float`:
+
+1. If `len(rewards) < 2`: return `0.0`
+2. Convert to numpy array
+3. Compute `l_uni = self._unimodal_mdl(arr)`
+4. Compute `l_bi = self._bimodal_mdl(arr)`
+5. Return `max(0.0, l_uni - l_bi)`
+
+Run `pytest tests/test_mdl_scorer.py` — all tests should now pass.
+
+Location: `src/repro_maa/mdl_scorer.py`
+
+### Step 6: Export MDLScorer from package
+
+Add `MDLScorer` to `src/repro_maa/__init__.py` exports alongside `TaskCell`.
+
+Location: `src/repro_maa/__init__.py`
+
+### Step 7: Final validation
+
+Run the full test suite (`pytest tests/ -m "not slow"`) to confirm no regressions. Verify the MDL scorer tests all pass with exact expected behavior.
 
 ---
 
 **BACKREFERENCE COMMENTS**
 
-When implementing code, add backreference comments to help future agents trace
-code back to its governing documentation.
-
-**Valid backreference types:**
-- `# Subsystem: docs/subsystems/<name>` - For architectural patterns
-- `# Chunk: docs/chunks/<name>` - For implementation work
-
-Place comments at the appropriate level:
-- **Module-level**: If this code implements the subsystem/chunk's core functionality
-- **Class-level**: If this class is part of the pattern
-- **Method-level**: If this method implements a specific behavior
-
-Format (place immediately before the symbol):
-```
-# Subsystem: docs/subsystems/workflow_artifacts - Workflow artifact manager pattern
-# Chunk: docs/chunks/auth_refactor - Authentication system redesign
+Add to `src/repro_maa/mdl_scorer.py` at module level:
+```python
+# Chunk: docs/chunks/mdl_curiosity_scorer - MDL-based curiosity signal for curriculum selection
 ```
 
-Do NOT add narrative backreferences. Narratives decompose into chunks; reference
-the implementing chunk instead.
-
-**Task context note**: In multi-project tasks, always use local paths (e.g.,
-`docs/chunks/chunk_name`) for chunk backreferences, not paths to the external
-artifact repo. Each project has `external.yaml` pointers that resolve to the
-actual chunk content.
--->
+Add to `tests/test_mdl_scorer.py` at module level:
+```python
+# Chunk: docs/chunks/mdl_curiosity_scorer - MDL curiosity scorer unit tests
+```
 
 ## Dependencies
 
-<!--
-What must exist before this chunk can be implemented?
-- Other chunks that must be complete
-- External libraries to add
-- Infrastructure or configuration
-
-If there are no dependencies, delete this section.
--->
+- **taskcell_abstraction** (ACTIVE): This chunk depends on the TaskCell abstraction existing to define the reward-value domain (floats from MAA reward functions). However, the MDLScorer itself has no runtime import dependency on TaskCell — it operates on plain `list[float]`. The dependency is conceptual: the rewards the scorer processes come from `TaskCell.score()`.
+- **numpy**: Already in `pyproject.toml` dependencies. Used for efficient array operations in the MDL computation.
+- No new external dependencies required.
 
 ## Risks and Open Questions
 
-<!--
-What might go wrong? What are you unsure about?
-Being explicit about uncertainty helps you (and agents) know where to
-be careful and when to stop and ask questions.
-
-Example:
-- fsync behavior may differ across filesystems; need to verify on ext4 and APFS
-- Unclear whether concurrent reads during write are safe; may need mutex
-- Performance target is aggressive; may need to iterate on buffer sizes
--->
+- **Monotonicity criterion (Success Criterion 5)**: The BIC-based MDL comparison is not analytically guaranteed to be monotonic as the success fraction increases continuously. However, for the discrete test case (stepping from 50% to 100% success in 10% increments with ±3.0 rewards), the signal should decrease monotonically because each step makes the data more unimodal. If edge cases arise where tiny floating-point differences break strict monotonicity, we may need to verify with ≤ (non-strict) rather than < (strict) comparisons in the test.
+- **Minimum window size for meaningful signal**: With very small windows (2–3 rewards), the BIC model penalty dominates and the bimodal model is penalized heavily. This is actually correct behavior — we shouldn't trust a curiosity signal from 2 observations — but downstream consumers (the stream generator) should be aware that useful signal requires ~10+ rewards.
+- **Reward value range assumption**: The scorer makes no assumption about the range of reward values. It works on any floats. The MAA reward functions produce values in roughly [-3, +3], but the scorer doesn't depend on this.
 
 ## Deviations
 
 <!--
 POPULATE DURING IMPLEMENTATION, not at planning time.
-
-When reality diverges from the plan, document it here:
-- What changed?
-- Why?
-- What was the impact?
-
-Minor deviations (renamed a function, used a different helper) don't need
-documentation. Significant deviations (changed the approach, skipped a step,
-added steps) do.
-
-Example:
-- Step 4: Originally planned to use std::fs::rename for atomic swap.
-  Testing revealed this isn't atomic across filesystems. Changed to
-  write-fsync-rename-fsync sequence per platform best practices.
 -->
