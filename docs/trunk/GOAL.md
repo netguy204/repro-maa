@@ -34,19 +34,19 @@ The target audience is RL researchers who want to reproduce and extend the MAA p
 ## Constraints
 
 - **Builds on the MAA codebase**: The `Meta-Ability-Alignment/` submodule provides the data generators, VeRL training infrastructure, and reward functions. The stream generator should integrate with these components where possible.
-- **Single-GPU prototyping**: The example stream and its analysis must be runnable on a single GPU for prototyping. Full-scale training can require multi-GPU (as the existing training scripts do), but the stream selection logic itself must be lightweight.
+- **Single-GPU training**: The full pipeline — curriculum selection, model inference, reward computation, and weight updates — must run on a single GPU. The target hardware is an NVIDIA DGX Spark (128GB unified memory, limited memory bandwidth) or comparable single-GPU setup.
 - **Python 3.10+**: Consistent with the MAA repo's environment requirements
 
 ## Out of Scope
 
-- **Full RLHF/PPO training run**: This project produces the *stream* and the *selection policy*, not a fully trained merged model. Training with VeRL is downstream work.
 - **New meta-ability task types**: We use only the three existing task families (Deduction, Induction, Abduction). Designing new task generators is out of scope.
 - **Model merging (Stage B)**: The mergekit integration for parameter-space merging is not part of this project.
-- **Benchmark evaluation**: Evaluating on MATH, GSM8K, or other downstream benchmarks is out of scope. Success is measured by stream quality, not end-task performance.
+- **Benchmark evaluation**: Evaluating on MATH, GSM8K, or other downstream benchmarks is out of scope. Success is measured by training reward curves and curriculum behavior, not end-task performance.
+- **Multi-GPU distributed training**: Training must be runnable on a single GPU. Multi-node or multi-GPU orchestration is out of scope.
 
 ## Success Criteria
 
 1. **Working stream generator**: A script that, given an agent's current performance profile (reward statistics per ability/level from the existing `formula.py`, `backward_reasoning.py`, `squence.py` reward functions), computes the MDL curiosity signal per task cell and emits the next batch of training problems from the highest-signal cell.
 2. **Curiosity signal is measurable**: The MDL score per cell is computable and logged. The stream demonstrates measurable preference for frontier cells — where the bimodal clustering of reward outcomes has the highest description length (neither trivially separable nor uniform noise).
 3. **Stream analysis artifacts**: The system produces a log showing, for each emitted batch: which ability/level was selected, the MDL curiosity score that drove the selection, the predicted vs. actual reward distribution, and a comparison to what a fixed curriculum would have selected — enabling post-hoc analysis of whether the curiosity policy made better choices.
-4. **Baseline comparison**: A simulation (or lightweight training experiment) showing the curiosity-driven stream leads to faster reward improvement compared to the paper's fixed ascending curriculum (levels 1→2), on at least one of the three meta-abilities. The MAA paper notes the 7B model "converges by Level 2" with fixed scheduling — the curiosity stream should identify this plateau earlier and reallocate training to more productive cells.
+4. **Baseline comparison via real training**: Train a language model twice — once with the curiosity-driven curriculum and once with the MAA paper's fixed ascending curriculum — and compare reward curves. The curiosity-driven run should lead to faster reward improvement on at least one of the three meta-abilities. The MAA paper notes the 7B model "converges by Level 2" with fixed scheduling — the curiosity stream should identify this plateau earlier and reallocate training to more productive cells.
