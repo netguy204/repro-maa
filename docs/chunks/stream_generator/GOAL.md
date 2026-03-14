@@ -1,18 +1,23 @@
 ---
-status: FUTURE
+status: IMPLEMENTING
 ticket: null
 parent_chunk: null
-code_paths: []
+code_paths:
+- src/repro_maa/stream.py
+- src/repro_maa/__init__.py
+- tests/test_stream_generator.py
 code_references: []
 narrative: curiosity_stream_mvp
 investigation: null
 subsystems: []
 friction_entries: []
 bug_type: null
-depends_on: ["taskcell_abstraction", "mdl_curiosity_scorer"]
-created_after: ["scaffold_project"]
+depends_on:
+- taskcell_abstraction
+- mdl_curiosity_scorer
+created_after:
+- scaffold_project
 ---
-
 <!--
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  DO NOT DELETE THIS COMMENT BLOCK until the chunk complete command is run.   ║

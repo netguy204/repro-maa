@@ -4,6 +4,7 @@
 __version__ = "0.1.0"
 
 from repro_maa.mdl_scorer import MDLScorer  # noqa: F401
+from repro_maa.stream import BatchResult, CuriosityStream  # noqa: F401
 from repro_maa.task_cell import TaskCell  # noqa: F401
 
-__all__ = ["MDLScorer", "TaskCell"]
+__all__ = ["BatchResult", "CuriosityStream", "MDLScorer", "TaskCell"]
