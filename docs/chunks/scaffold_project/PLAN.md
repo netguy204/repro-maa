@@ -8,170 +8,143 @@ to hand to an agent.
 
 ## Approach
 
-<!--
-How will you build this? Describe the strategy at a high level.
-What patterns or techniques will you use?
-What existing code will you build on?
+This chunk creates the foundational Python project scaffolding that every subsequent chunk in the `curiosity_stream_mvp` narrative depends on. The strategy is:
 
-Reference docs/trunk/DECISIONS.md entries where relevant.
-If this approach represents a new significant decision, ask the user
-if we should add it to DECISIONS.md and reference it here.
+1. **uv-managed project with `pyproject.toml`** — Use uv as the package manager (consistent with modern Python workflows). The project's own source lives in `src/repro_maa/` using src-layout. The MAA submodule is not installed as a package; instead we add its paths to `sys.path` at import time via a thin compatibility shim.
 
-Always include tests in your implementation plan and adhere to
-docs/trunk/TESTING_PHILOSOPHY.md in your planning.
+2. **Compatibility shim for MAA imports** — The MAA codebase is not packaged (no `__init__.py` files, no setup.py). Rather than forking and restructuring it, we create a `src/repro_maa/maa_compat.py` module that handles `sys.path` manipulation and re-exports the generator classes and reward functions under clean names. This isolates the path-hacking to one file and gives downstream chunks stable import paths.
 
-Remember to update code_paths in the chunk's GOAL.md (e.g., docs/chunks/scaffold_project/GOAL.md)
-with references to the files that you expect to touch.
--->
+3. **Integration tests over the MAA boundary** — Per TESTING_PHILOSOPHY.md, "we test that we can import and invoke it, not that it's correct. Our boundary is the wrapper, not the internals." Tests will verify that each generator produces structurally valid output and each reward function accepts that output without error.
 
-## Subsystem Considerations
+4. **Smoke test script** — A standalone script in `scripts/smoke_test.py` that exercises all generators and scorers end-to-end and prints a summary table. This is the human-readable proof that the scaffold works.
 
-<!--
-Before designing your implementation, check docs/subsystems/ for relevant
-cross-cutting patterns.
-
-QUESTIONS TO CONSIDER:
-- Does this chunk touch any existing subsystem's scope?
-- Will this chunk implement part of a subsystem (contribute code) or use it
-  (depend on it)?
-- Did you discover code during exploration that should be part of a subsystem
-  but doesn't follow its patterns?
-
-If no subsystems are relevant, delete this section.
-
-WHEN SUBSYSTEMS ARE RELEVANT:
-List each relevant subsystem with its status and your relationship:
-- **docs/subsystems/validation** (DOCUMENTED): This chunk USES the validation
-  subsystem to check input
-- **docs/subsystems/error_handling** (REFACTORING): This chunk IMPLEMENTS a
-  new error type following the subsystem's patterns
-
-HOW SUBSYSTEM STATUS AFFECTS YOUR WORK:
-
-DOCUMENTED subsystems: The subsystem's patterns are captured but deviations are not
-being actively fixed. If you discover code that deviates from the subsystem's
-patterns, add it to the subsystem's Known Deviations section. Do NOT prioritize
-fixing those deviations—your chunk has its own goals.
-
-REFACTORING subsystems: The subsystem is being actively consolidated. If your chunk
-work touches code that deviates from the subsystem's patterns, attempt to bring it
-into compliance as part of your work. This is "opportunistic improvement"—improve
-what you touch, but don't expand scope to fix unrelated deviations.
-
-WHEN YOU DISCOVER DEVIATING CODE:
-- Add it to the subsystem's Known Deviations section
-- Note whether you will address it (REFACTORING status + relevant to your work)
-  or leave it for future work (DOCUMENTED status or outside your chunk's scope)
-
-Example:
-- **Discovered deviation**: src/legacy/parser.py#validate_input does its own
-  validation instead of using the validation subsystem
-  - Added to docs/subsystems/validation Known Deviations
-  - Action: Will not address (subsystem is DOCUMENTED; deviation outside chunk scope)
--->
+No new architectural decisions are introduced. If the decision to use uv + src-layout proves significant enough to warrant a DECISIONS.md entry, we'll propose it during implementation.
 
 ## Sequence
 
-<!--
-Ordered steps to implement this chunk. Each step should be:
-- Small enough to reason about in isolation
-- Large enough to be meaningful
-- Clear about its inputs and outputs
+### Step 1: Create `pyproject.toml` with project metadata and dependencies
 
-This sequence is your contract with yourself (and with agents).
-Work through it in order. Don't skip ahead.
+Create `pyproject.toml` at the repo root with:
+- Project name: `repro-maa`
+- Python requirement: `>=3.10`
+- Dependencies:
+  - `openai` — for the local LLM endpoint at `http://100.88.102.33:8000/v1` (downstream chunks)
+  - `numpy` — used by MAA generators and our MDL scorer (future chunks)
+  - `pytest` — test runner (dev dependency)
+- Build system: hatchling (standard for src-layout)
+- Package discovery pointing to `src/`
 
-Example:
+Run `uv sync` to create the virtual environment and lock file.
 
-### Step 1: Define the SegmentHeader struct
+Location: `pyproject.toml`
 
-Create the struct that represents a segment's header with fields for:
-- magic number (4 bytes)
-- version (2 bytes)
-- segment_id (8 bytes)
-- message_count (4 bytes)
-- checksum (4 bytes)
+### Step 2: Create the source package structure
 
-Location: src/segment/format.rs
+Create the directory layout:
 
-### Step 2: Implement header serialization
-
-Add `to_bytes()` and `from_bytes()` methods to SegmentHeader.
-Use little-endian encoding per SPEC.md Section 3.1.
-
-### Step 3: ...
-
----
-
-**BACKREFERENCE COMMENTS**
-
-When implementing code, add backreference comments to help future agents trace
-code back to its governing documentation.
-
-**Valid backreference types:**
-- `# Subsystem: docs/subsystems/<name>` - For architectural patterns
-- `# Chunk: docs/chunks/<name>` - For implementation work
-
-Place comments at the appropriate level:
-- **Module-level**: If this code implements the subsystem/chunk's core functionality
-- **Class-level**: If this class is part of the pattern
-- **Method-level**: If this method implements a specific behavior
-
-Format (place immediately before the symbol):
 ```
-# Subsystem: docs/subsystems/workflow_artifacts - Workflow artifact manager pattern
-# Chunk: docs/chunks/auth_refactor - Authentication system redesign
+src/
+  repro_maa/
+    __init__.py        # Package marker, version string
+    maa_compat.py      # MAA import compatibility shim
+scripts/
+  smoke_test.py        # (placeholder, filled in Step 6)
+tests/
+  __init__.py
+  conftest.py          # Shared fixtures
 ```
 
-Do NOT add narrative backreferences. Narratives decompose into chunks; reference
-the implementing chunk instead.
+Location: `src/repro_maa/`, `tests/`, `scripts/`
 
-**Task context note**: In multi-project tasks, always use local paths (e.g.,
-`docs/chunks/chunk_name`) for chunk backreferences, not paths to the external
-artifact repo. Each project has `external.yaml` pointers that resolve to the
-actual chunk content.
--->
+### Step 3: Implement the MAA compatibility shim
+
+Create `src/repro_maa/maa_compat.py` that:
+
+1. Computes the absolute paths to `Meta-Ability-Alignment/Data_Synthesis/` and `Meta-Ability-Alignment/Training/verl/utils/reward_score/` relative to the repo root.
+2. Temporarily adds those paths to `sys.path` during import (using a context manager or guarded insertion).
+3. Re-exports the key classes and functions:
+   - `DeductionSampler` — alias for `Deduction.NestedLogicPuzzleSampler`
+   - `DeductionFormatter` — alias for `Deduction.PuzzleFormatter`
+   - `InductionGenerator` — alias for `Induction.SequencePuzzleGenerator`
+   - `generate_abduction_problem` — from `Abduction`
+   - `deduction_score` — alias for `formula.compute_score`
+   - `induction_score` — alias for `squence.compute_score`
+   - `abduction_score` — alias for `backward_reasoning.compute_score`
+   - `mixed_score` — alias for `mix.compute_score`
+4. Provides a `REPO_ROOT` constant for other modules to reference.
+
+The shim must handle the case where MAA code has its own implicit dependencies (e.g., `random`, `re`, `itertools` from stdlib — these should already be available). If MAA code imports third-party libraries not in our deps, we discover and add them in this step.
+
+Location: `src/repro_maa/maa_compat.py`
+
+### Step 4: Write integration tests for data generators
+
+Create `tests/test_integration_maa.py` with tests that verify success criteria #2:
+
+- **`test_deduction_generator_produces_valid_problem`**: Instantiate `DeductionSampler(difficulty=1, seed=42)`, call `sample_unique(1)`, verify the result is a non-empty list of `(formulas, assignment)` tuples where formulas is a list of strings and assignment is a dict mapping variable names to booleans.
+- **`test_induction_generator_produces_valid_problem`**: Instantiate `InductionGenerator(seed=42)`, call `generate_puzzles(num=1, level=1)`, verify the result is a list of dicts with keys `"question"`, `"answer"`, `"complete_sequence"`.
+- **`test_abduction_generator_produces_valid_problem`**: Call `generate_abduction_problem(problem_id=1, num_goals=1, reachable_k=1, chain_depth=2, distractors=3, cycle_prob=0.1)`, verify the result is a dict with keys `"premises"`, `"known_atoms"`, `"goals"`, `"reachable_goals"`, `"unreachable_goals"`.
+- **`test_each_generator_at_multiple_levels`**: Parametrized test across generators and levels 1–3 (levels 4–5 are slow for deduction). Marked `@pytest.mark.slow`.
+
+Location: `tests/test_integration_maa.py`
+
+### Step 5: Write integration tests for reward functions
+
+Add tests to `tests/test_integration_maa.py` that verify success criteria #3:
+
+- **`test_deduction_score_with_correct_answer`**: Build a synthetic `solution_str` with proper `<think>...</think><answer>...</answer>` tags containing a correct assignment, and a `ground_truth` dict with `solution_text_format` in the expected `"(1) A is True\n(2) B is False"` format. Call `deduction_score()` and assert score > 0 (expected: +3).
+- **`test_deduction_score_with_wrong_answer`**: Same format but incorrect assignment. Assert score < 0.
+- **`test_induction_score_with_correct_answer`**: Build solution_str with `<answer>42</answer>` and ground_truth with `solution_text_format: "42"`. Assert score > 0.
+- **`test_abduction_score_with_correct_answer`**: Build solution_str with correct reachable/unreachable classification. Assert score > 0.
+- **`test_mixed_score_routes_correctly`**: Call `mixed_score` with each of the three ground_truth formats and verify it returns the same score as the direct scorer.
+
+These tests use synthetic inputs (not generated problems) to keep them fast and deterministic.
+
+Location: `tests/test_integration_maa.py`
+
+### Step 6: Create the smoke test script
+
+Create `scripts/smoke_test.py` that:
+
+1. Imports all generators and scorers via `repro_maa.maa_compat`.
+2. For each ability (Deduction, Induction, Abduction) and a subset of levels (1–3 for speed):
+   a. Generates one problem using the appropriate generator.
+   b. Constructs a dummy response string (a plausible but likely wrong answer in the `<think>...</think><answer>...</answer>` format).
+   c. Formats the ground truth into the dict format expected by the scorer.
+   d. Calls the scorer with the dummy response and ground truth.
+   e. Records the ability, level, and score.
+3. Prints a summary table to stdout showing ability, level, and score for each cell.
+4. Exits 0 if all cells produced a score (regardless of whether the dummy answer was correct — we're testing importability and invocation, not answer quality).
+
+The script should be runnable as `python scripts/smoke_test.py` from the repo root.
+
+Location: `scripts/smoke_test.py`
+
+### Step 7: Run tests and validate
+
+1. Run `python -m pytest tests/test_integration_maa.py -v` — all tests must pass.
+2. Run `python scripts/smoke_test.py` — must exit 0 and print the summary table.
+3. Run `ve validate` — must pass.
+
+Fix any issues discovered during this step (missing dependencies, import errors, path issues).
+
+Location: N/A (validation step)
 
 ## Dependencies
 
-<!--
-What must exist before this chunk can be implemented?
-- Other chunks that must be complete
-- External libraries to add
-- Infrastructure or configuration
-
-If there are no dependencies, delete this section.
--->
+- **Meta-Ability-Alignment submodule** must be checked out and present at `Meta-Ability-Alignment/` in the repo root.
+- **uv** must be installed on the system for `uv sync`.
+- No other chunks need to be complete first — this is chunk 0 in the narrative.
 
 ## Risks and Open Questions
 
-<!--
-What might go wrong? What are you unsure about?
-Being explicit about uncertainty helps you (and agents) know where to
-be careful and when to stop and ask questions.
-
-Example:
-- fsync behavior may differ across filesystems; need to verify on ext4 and APFS
-- Unclear whether concurrent reads during write are safe; may need mutex
-- Performance target is aggressive; may need to iterate on buffer sizes
--->
+- **MAA implicit dependencies**: The MAA generator code may import third-party packages we haven't pinned (e.g., `sympy`, `tqdm`). We'll discover these during Step 3 when we first attempt the imports and add them to `pyproject.toml` as needed.
+- **Abduction generator reliability**: `generate_abduction_problem` includes a consistency check (`check_consistency`) that brute-force enumerates 2^N valuations. At higher difficulty levels (N up to ~20 atoms), this can be slow. The smoke test should stick to levels 1–2 for abduction to avoid timeouts. If consistency checks fail (the function returns invalid puzzles and retries), we may need to add retry logic in the shim.
+- **MAA code uses `print()` for debug output**: The reward scoring functions print debugging info to stdout. This is noisy but not harmful. We may want to capture/suppress this output in tests, but it's not a blocker.
+- **`squence.py` filename typo**: The MAA codebase misspells "sequence" as "squence" in the filename. Our shim re-exports it as `induction_score` so downstream code never sees this quirk.
 
 ## Deviations
 
 <!--
 POPULATE DURING IMPLEMENTATION, not at planning time.
-
-When reality diverges from the plan, document it here:
-- What changed?
-- Why?
-- What was the impact?
-
-Minor deviations (renamed a function, used a different helper) don't need
-documentation. Significant deviations (changed the approach, skipped a step,
-added steps) do.
-
-Example:
-- Step 4: Originally planned to use std::fs::rename for atomic swap.
-  Testing revealed this isn't atomic across filesystems. Changed to
-  write-fsync-rename-fsync sequence per platform best practices.
 -->

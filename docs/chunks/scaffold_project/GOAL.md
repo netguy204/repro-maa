@@ -1,8 +1,14 @@
 ---
-status: FUTURE
+status: IMPLEMENTING
 ticket: null
 parent_chunk: null
-code_paths: []
+code_paths:
+  - pyproject.toml
+  - src/repro_maa/__init__.py
+  - src/repro_maa/maa_compat.py
+  - tests/conftest.py
+  - tests/test_integration_maa.py
+  - scripts/smoke_test.py
 code_references: []
 narrative: curiosity_stream_mvp
 investigation: null
@@ -12,7 +18,6 @@ bug_type: null
 depends_on: []
 created_after: []
 ---
-
 <!--
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  DO NOT DELETE THIS COMMENT BLOCK until the chunk complete command is run.   ║
