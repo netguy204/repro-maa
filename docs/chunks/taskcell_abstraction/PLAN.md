@@ -1,177 +1,135 @@
-<!--
-This document captures HOW you'll achieve the chunk's GOAL.
-It should be specific enough that each step is a reasonable unit of work
-to hand to an agent.
--->
-
 # Implementation Plan
 
 ## Approach
 
-<!--
-How will you build this? Describe the strategy at a high level.
-What patterns or techniques will you use?
-What existing code will you build on?
+Build a `TaskCell` class in `src/repro_maa/task_cell.py` that wraps the three MAA generator/scorer pairs behind a uniform interface. The key challenge is that each ability has a structurally different generator API and output format:
 
-Reference docs/trunk/DECISIONS.md entries where relevant.
-If this approach represents a new significant decision, ask the user
-if we should add it to DECISIONS.md and reference it here.
+- **Deduction**: `DeductionSampler(difficulty, seed).sample_unique(n)` → list of `(formulas, assignment)` tuples; requires `DeductionFormatter` to produce human-readable text and solution text.
+- **Induction**: `InductionGenerator(seed).generate_puzzles(num, level)` → list of dicts with `puzzle_text`, `solution_text` (int), `complete_sequence`.
+- **Abduction**: `generate_abduction_problem(problem_id, num_goals, ...)` → dict with `premises`, `goals`, `reachable_goals`, `unreachable_goals`; requires formatting to produce puzzle text and solution text.
 
-Always include tests in your implementation plan and adhere to
-docs/trunk/TESTING_PHILOSOPHY.md in your planning.
+The strategy is to use an **adapter pattern**: a private `_generate_one_*` method per ability normalizes each generator's output into a common problem dict `{"puzzle_text": str, "ground_truth": dict}`, and `score()` dispatches to the correct MAA reward function. The `ground_truth` dict always contains the key `"solution_text_format"` expected by the MAA scorers.
 
-Remember to update code_paths in the chunk's GOAL.md (e.g., docs/chunks/taskcell_abstraction/GOAL.md)
-with references to the files that you expect to touch.
--->
+For determinism (success criterion #5), all random state flows through an explicit seed parameter on `TaskCell.__init__`. The seed is used to construct generators and to derive per-call seeds for `generate(n)` calls.
 
-## Subsystem Considerations
+Tests follow TDD per `docs/trunk/TESTING_PHILOSOPHY.md`:
+- **Unit tests** (`tests/test_task_cell.py`) verify the TaskCell contract with synthetic/fixture data where possible, and real generators for integration coverage.
+- **Integration tests** are marked `@pytest.mark.slow` since generators at higher levels can be slow.
 
-<!--
-Before designing your implementation, check docs/subsystems/ for relevant
-cross-cutting patterns.
-
-QUESTIONS TO CONSIDER:
-- Does this chunk touch any existing subsystem's scope?
-- Will this chunk implement part of a subsystem (contribute code) or use it
-  (depend on it)?
-- Did you discover code during exploration that should be part of a subsystem
-  but doesn't follow its patterns?
-
-If no subsystems are relevant, delete this section.
-
-WHEN SUBSYSTEMS ARE RELEVANT:
-List each relevant subsystem with its status and your relationship:
-- **docs/subsystems/validation** (DOCUMENTED): This chunk USES the validation
-  subsystem to check input
-- **docs/subsystems/error_handling** (REFACTORING): This chunk IMPLEMENTS a
-  new error type following the subsystem's patterns
-
-HOW SUBSYSTEM STATUS AFFECTS YOUR WORK:
-
-DOCUMENTED subsystems: The subsystem's patterns are captured but deviations are not
-being actively fixed. If you discover code that deviates from the subsystem's
-patterns, add it to the subsystem's Known Deviations section. Do NOT prioritize
-fixing those deviations—your chunk has its own goals.
-
-REFACTORING subsystems: The subsystem is being actively consolidated. If your chunk
-work touches code that deviates from the subsystem's patterns, attempt to bring it
-into compliance as part of your work. This is "opportunistic improvement"—improve
-what you touch, but don't expand scope to fix unrelated deviations.
-
-WHEN YOU DISCOVER DEVIATING CODE:
-- Add it to the subsystem's Known Deviations section
-- Note whether you will address it (REFACTORING status + relevant to your work)
-  or leave it for future work (DOCUMENTED status or outside your chunk's scope)
-
-Example:
-- **Discovered deviation**: src/legacy/parser.py#validate_input does its own
-  validation instead of using the validation subsystem
-  - Added to docs/subsystems/validation Known Deviations
-  - Action: Will not address (subsystem is DOCUMENTED; deviation outside chunk scope)
--->
+The existing `maa_compat.py` shim (from `scaffold_project`) provides all the imports we need. TaskCell builds on top of it — it does not duplicate any import-path manipulation.
 
 ## Sequence
 
-<!--
-Ordered steps to implement this chunk. Each step should be:
-- Small enough to reason about in isolation
-- Large enough to be meaningful
-- Clear about its inputs and outputs
+### Step 1: Write failing unit tests for TaskCell
 
-This sequence is your contract with yourself (and with agents).
-Work through it in order. Don't skip ahead.
+Create `tests/test_task_cell.py` with tests that express the success criteria before writing implementation code. Tests to write:
 
-Example:
+1. **Construction**: `TaskCell("deduction", 1)` constructs without error; invalid ability or level raises `ValueError`.
+2. **Generate contract**: `cell.generate(n)` returns a list of exactly `n` dicts, each with `"puzzle_text"` (str, non-empty) and `"ground_truth"` (dict with `"solution_text_format"` key).
+3. **Score contract**: `cell.score(response_str, ground_truth_dict)` returns a float. A correct response scores positive; an incorrect response scores negative.
+4. **All 15 cells**: Parametrized test over all 3 abilities × 5 levels verifying `generate(1)` succeeds for each. Mark `@pytest.mark.slow`.
+5. **Determinism**: Two `TaskCell` instances with the same `(ability, level, seed)` produce identical problems from `generate(n)`.
 
-### Step 1: Define the SegmentHeader struct
+Location: `tests/test_task_cell.py`
 
-Create the struct that represents a segment's header with fields for:
-- magic number (4 bytes)
-- version (2 bytes)
-- segment_id (8 bytes)
-- message_count (4 bytes)
-- checksum (4 bytes)
+### Step 2: Define the TaskCell class skeleton
 
-Location: src/segment/format.rs
+Create `src/repro_maa/task_cell.py` with:
 
-### Step 2: Implement header serialization
+- `TaskCell.__init__(self, ability: str, level: int, seed: int = 42)` — validates ability is one of `("deduction", "induction", "abduction")` and level is in `range(1, 6)`. Stores ability, level, seed.
+- `TaskCell.generate(self, n: int) -> list[dict]` — stub that raises `NotImplementedError`.
+- `TaskCell.score(self, response: str, ground_truth: dict) -> float` — stub that raises `NotImplementedError`.
+- `TaskCell.__repr__` for debugging: `TaskCell(ability='deduction', level=1)`.
 
-Add `to_bytes()` and `from_bytes()` methods to SegmentHeader.
-Use little-endian encoding per SPEC.md Section 3.1.
+Add module-level backreference: `# Chunk: docs/chunks/taskcell_abstraction - Unified TaskCell abstraction`
 
-### Step 3: ...
+Location: `src/repro_maa/task_cell.py`
 
----
+### Step 3: Implement the difficulty parameter mapping for Abduction
 
-**BACKREFERENCE COMMENTS**
+Define a module-level constant `_ABDUCTION_LEVEL_PARAMS` mapping level (1–5) to the `generate_abduction_problem` keyword arguments. The smoke test uses `num_goals=max(1, level)`, `reachable_k=1`, `chain_depth=level+1`, `distractors=3`, `cycle_prob=0.1` — we follow that pattern but extend to levels 4–5:
 
-When implementing code, add backreference comments to help future agents trace
-code back to its governing documentation.
-
-**Valid backreference types:**
-- `# Subsystem: docs/subsystems/<name>` - For architectural patterns
-- `# Chunk: docs/chunks/<name>` - For implementation work
-
-Place comments at the appropriate level:
-- **Module-level**: If this code implements the subsystem/chunk's core functionality
-- **Class-level**: If this class is part of the pattern
-- **Method-level**: If this method implements a specific behavior
-
-Format (place immediately before the symbol):
-```
-# Subsystem: docs/subsystems/workflow_artifacts - Workflow artifact manager pattern
-# Chunk: docs/chunks/auth_refactor - Authentication system redesign
+```python
+_ABDUCTION_LEVEL_PARAMS = {
+    1: dict(num_goals=1, reachable_k=1, chain_depth=2, distractors=3, cycle_prob=0.1),
+    2: dict(num_goals=2, reachable_k=1, chain_depth=3, distractors=3, cycle_prob=0.1),
+    3: dict(num_goals=3, reachable_k=1, chain_depth=4, distractors=3, cycle_prob=0.1),
+    4: dict(num_goals=4, reachable_k=1, chain_depth=5, distractors=3, cycle_prob=0.1),
+    5: dict(num_goals=5, reachable_k=1, chain_depth=6, distractors=3, cycle_prob=0.1),
+}
 ```
 
-Do NOT add narrative backreferences. Narratives decompose into chunks; reference
-the implementing chunk instead.
+Location: `src/repro_maa/task_cell.py`
 
-**Task context note**: In multi-project tasks, always use local paths (e.g.,
-`docs/chunks/chunk_name`) for chunk backreferences, not paths to the external
-artifact repo. Each project has `external.yaml` pointers that resolve to the
-actual chunk content.
--->
+### Step 4: Implement generate() for each ability
+
+Implement three private methods that normalize each generator's output to the common format `{"puzzle_text": str, "ground_truth": {"solution_text_format": ...}}`:
+
+**`_generate_deduction(self, n: int) -> list[dict]`**:
+- Create `DeductionSampler(difficulty=self.level, seed=self._seed)`.
+- Call `sampler.sample_unique(n)` to get `(formulas, assignment)` tuples.
+- For each tuple, create a `DeductionFormatter(formulas, assignment)`.
+- Return `{"puzzle_text": fmt.puzzle_text(), "ground_truth": {"solution_text_format": fmt.solution_text()}}`.
+
+**`_generate_induction(self, n: int) -> list[dict]`**:
+- Create `InductionGenerator(seed=self._seed)`.
+- Call `gen.generate_puzzles(num=n, level=self.level)`.
+- Return `{"puzzle_text": p["puzzle_text"], "ground_truth": {"solution_text_format": p["solution_text"]}}` for each puzzle.
+
+**`_generate_abduction(self, n: int) -> list[dict]`**:
+- For `i` in `range(n)`, call `generate_abduction_problem(problem_id=seed_offset+i, **_ABDUCTION_LEVEL_PARAMS[self.level])`.
+- Format `puzzle_text` from premises, known_atoms, and goals (similar to how the MAA training data formats it — a readable prompt listing premises and asking which goals are reachable).
+- Format `ground_truth["solution_text_format"]` as numbered lines: `"(1) GoalA is reachable\n(2) GoalB is unreachable\n..."` — matching the format expected by `backward_reasoning.compute_score`.
+- Return the list of problem dicts.
+
+Wire `generate()` to dispatch to the correct private method based on `self.ability`.
+
+Location: `src/repro_maa/task_cell.py`
+
+### Step 5: Implement score()
+
+Implement `TaskCell.score(self, response: str, ground_truth: dict) -> float`:
+
+- Dispatch based on `self.ability`:
+  - `"deduction"` → `deduction_score(response, ground_truth)`
+  - `"induction"` → `induction_score(response, ground_truth)`
+  - `"abduction"` → `abduction_score(response, ground_truth)`
+- Return the float result.
+
+The `response` parameter is expected to already be in the MAA format: `"Assistant: <think>...</think><answer>...</answer>"`. TaskCell does not wrap responses — that is the caller's responsibility (consistent with how the existing integration tests work).
+
+Location: `src/repro_maa/task_cell.py`
+
+### Step 6: Export TaskCell from the package
+
+Add `TaskCell` to `src/repro_maa/__init__.py` exports so downstream code can `from repro_maa import TaskCell`.
+
+Location: `src/repro_maa/__init__.py`
+
+### Step 7: Run tests and iterate
+
+Run `pytest tests/test_task_cell.py -v` to verify all unit tests pass. Then run the full suite with `pytest tests/ -v` to ensure no regressions. Fix any failures.
+
+For the `@pytest.mark.slow` parametrized tests across all 15 cells, verify with `pytest tests/test_task_cell.py -v -m slow`. These tests exercise the real MAA generators at levels 1–5, confirming that every cell in the 3×5 grid produces valid output.
+
+### Step 8: Verify determinism
+
+Run the determinism test explicitly: create two `TaskCell` instances with identical `(ability, level, seed)`, call `generate(3)` on each, and assert the returned problem lists are identical. This is already covered in Step 1's test #5, but verify it passes for all three abilities.
 
 ## Dependencies
 
-<!--
-What must exist before this chunk can be implemented?
-- Other chunks that must be complete
-- External libraries to add
-- Infrastructure or configuration
-
-If there are no dependencies, delete this section.
--->
+- **scaffold_project** (ACTIVE): Provides the `maa_compat.py` shim with all generator/scorer imports. Must be complete before this chunk can run.
+- **No new external libraries**: TaskCell uses only the existing `repro_maa.maa_compat` exports and Python stdlib.
 
 ## Risks and Open Questions
 
-<!--
-What might go wrong? What are you unsure about?
-Being explicit about uncertainty helps you (and agents) know where to
-be careful and when to stop and ask questions.
-
-Example:
-- fsync behavior may differ across filesystems; need to verify on ext4 and APFS
-- Unclear whether concurrent reads during write are safe; may need mutex
-- Performance target is aggressive; may need to iterate on buffer sizes
--->
+- **Abduction puzzle_text formatting**: The MAA codebase doesn't have a standard formatter for Abduction problems the way Deduction has `PuzzleFormatter`. We need to construct the puzzle text ourselves from `premises`, `known_atoms`, and `goals`. The exact format doesn't matter for this abstraction layer (downstream consumers use `puzzle_text` as a prompt), but it should be human-readable and complete enough to solve.
+- **Abduction difficulty scaling at levels 4–5**: The smoke test only exercises levels 1–3. Levels 4–5 with more goals and deeper chain depths may be slow or produce degenerate problems. If generation fails or is prohibitively slow at high levels, we may need to adjust the parameter mapping. The `@pytest.mark.slow` marker on high-level tests protects the fast test suite.
+- **Abduction seeding**: Unlike Deduction and Induction generators, `generate_abduction_problem` doesn't take a `seed` parameter. Determinism may require setting `random.seed()` before each call. Need to verify whether the function uses `random` module internally.
+- **Deduction `sample_unique(n)` for large n**: May fail if there aren't enough unique puzzles at a given difficulty. We should document this limitation but not over-engineer around it — the typical use case is small batches (1–32).
 
 ## Deviations
 
 <!--
 POPULATE DURING IMPLEMENTATION, not at planning time.
-
-When reality diverges from the plan, document it here:
-- What changed?
-- Why?
-- What was the impact?
-
-Minor deviations (renamed a function, used a different helper) don't need
-documentation. Significant deviations (changed the approach, skipped a step,
-added steps) do.
-
-Example:
-- Step 4: Originally planned to use std::fs::rename for atomic swap.
-  Testing revealed this isn't atomic across filesystems. Changed to
-  write-fsync-rename-fsync sequence per platform best practices.
 -->
