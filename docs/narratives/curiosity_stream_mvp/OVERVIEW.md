@@ -1,5 +1,5 @@
 ---
-status: DRAFTING
+status: COMPLETED
 advances_trunk_goal: "All four Success Criteria and Required Properties: MDL-based curiosity signal, High-signal filtering, Program-verifiable rewards, Observable stream metadata"
 proposed_chunks:
   - prompt: "Set up this repository as a working Python project that can import and exercise critical parts of the Meta-Ability-Alignment submodule. Create pyproject.toml, pin dependencies, verify generators and reward functions are importable, provide a smoke test."
