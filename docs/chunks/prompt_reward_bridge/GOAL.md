@@ -1,8 +1,12 @@
 ---
-status: FUTURE
+status: IMPLEMENTING
 ticket: null
 parent_chunk: null
-code_paths: []
+code_paths:
+  - src/repro_maa/prompt_reward_bridge.py
+  - tests/test_prompt_reward_bridge.py
+  - tests/conftest.py
+  - src/repro_maa/__init__.py
 code_references: []
 narrative: curiosity_training_run
 investigation: null
@@ -10,9 +14,9 @@ subsystems: []
 friction_entries: []
 bug_type: null
 depends_on: []
-created_after: ["stream_visualization"]
+created_after:
+- stream_visualization
 ---
-
 <!--
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  DO NOT DELETE THIS COMMENT BLOCK until the chunk complete command is run.   ║

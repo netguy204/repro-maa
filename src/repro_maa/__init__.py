@@ -11,6 +11,10 @@ from repro_maa.simulation import (  # noqa: F401
     compare_runs,
     run_simulation,
 )
+from repro_maa.prompt_reward_bridge import (  # noqa: F401
+    format_chat_prompt,
+    make_reward_func,
+)
 from repro_maa.stream import BatchResult, CuriosityStream  # noqa: F401
 from repro_maa.task_cell import TaskCell  # noqa: F401
 
@@ -23,5 +27,7 @@ __all__ = [
     "SyntheticAgent",
     "TaskCell",
     "compare_runs",
+    "format_chat_prompt",
+    "make_reward_func",
     "run_simulation",
 ]

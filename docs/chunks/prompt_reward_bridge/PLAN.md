@@ -8,170 +8,214 @@ to hand to an agent.
 
 ## Approach
 
-<!--
-How will you build this? Describe the strategy at a high level.
-What patterns or techniques will you use?
-What existing code will you build on?
+Build a single new module `src/repro_maa/prompt_reward_bridge.py` containing two
+pure functions (no classes needed — these are stateless transformations):
 
-Reference docs/trunk/DECISIONS.md entries where relevant.
-If this approach represents a new significant decision, ask the user
-if we should add it to DECISIONS.md and reference it here.
+1. **`format_chat_prompt`** — Converts a TaskCell problem dict into a Qwen3.5-9B
+   chat message list. The system message instructs the model to reason in
+   `<think>...</think>` and answer in `<answer>...</answer>` tags. The user
+   message contains the puzzle text. This mirrors what `curiosity_grpo_loop` will
+   feed to GRPOTrainer as its prompt dataset.
 
-Always include tests in your implementation plan and adhere to
-docs/trunk/TESTING_PHILOSOPHY.md in your planning.
+2. **`make_reward_func`** — Factory that returns a TRL-compatible reward function
+   bound to a specific ability type. TRL's GRPOTrainer calls reward functions with
+   the signature `(completions, **kwargs) -> list[float]`, where `completions` is
+   a list of model-generated strings and `**kwargs` includes any extra columns from
+   the dataset (we pass `ground_truth` through). The returned function iterates
+   over completions, dispatches to the correct MAA scorer via `TaskCell.score()`,
+   and collects float rewards.
 
-Remember to update code_paths in the chunk's GOAL.md (e.g., docs/chunks/prompt_reward_bridge/GOAL.md)
-with references to the files that you expect to touch.
--->
+**Building on existing code:**
 
-## Subsystem Considerations
+- `TaskCell` (from `taskcell_abstraction` chunk) already provides uniform
+  `generate()` → problem dicts and `score(response, ground_truth) -> float`.
+  The prompt formatter consumes `generate()` output; the reward adapter calls
+  `score()` internally.
+- `maa_compat` handles all MAA import path-hacking. This chunk does not touch
+  MAA internals.
 
-<!--
-Before designing your implementation, check docs/subsystems/ for relevant
-cross-cutting patterns.
+**Testing strategy (per `docs/trunk/TESTING_PHILOSOPHY.md`):**
 
-QUESTIONS TO CONSIDER:
-- Does this chunk touch any existing subsystem's scope?
-- Will this chunk implement part of a subsystem (contribute code) or use it
-  (depend on it)?
-- Did you discover code during exploration that should be part of a subsystem
-  but doesn't follow its patterns?
-
-If no subsystems are relevant, delete this section.
-
-WHEN SUBSYSTEMS ARE RELEVANT:
-List each relevant subsystem with its status and your relationship:
-- **docs/subsystems/validation** (DOCUMENTED): This chunk USES the validation
-  subsystem to check input
-- **docs/subsystems/error_handling** (REFACTORING): This chunk IMPLEMENTS a
-  new error type following the subsystem's patterns
-
-HOW SUBSYSTEM STATUS AFFECTS YOUR WORK:
-
-DOCUMENTED subsystems: The subsystem's patterns are captured but deviations are not
-being actively fixed. If you discover code that deviates from the subsystem's
-patterns, add it to the subsystem's Known Deviations section. Do NOT prioritize
-fixing those deviations—your chunk has its own goals.
-
-REFACTORING subsystems: The subsystem is being actively consolidated. If your chunk
-work touches code that deviates from the subsystem's patterns, attempt to bring it
-into compliance as part of your work. This is "opportunistic improvement"—improve
-what you touch, but don't expand scope to fix unrelated deviations.
-
-WHEN YOU DISCOVER DEVIATING CODE:
-- Add it to the subsystem's Known Deviations section
-- Note whether you will address it (REFACTORING status + relevant to your work)
-  or leave it for future work (DOCUMENTED status or outside your chunk's scope)
-
-Example:
-- **Discovered deviation**: src/legacy/parser.py#validate_input does its own
-  validation instead of using the validation subsystem
-  - Added to docs/subsystems/validation Known Deviations
-  - Action: Will not address (subsystem is DOCUMENTED; deviation outside chunk scope)
--->
+- TDD for both functions — write failing tests first, then implement.
+- Prompt formatting is a deterministic transformation: assert on message
+  structure, role names, tag presence, and round-trip over all three abilities.
+- Reward adapter is a deterministic computation: assert that wrapping+dispatching
+  produces identical scores to calling `TaskCell.score()` directly.
+- Integration test verifying the adapter works with TRL's calling convention
+  (the `completions` + `**kwargs` signature).
 
 ## Sequence
 
-<!--
-Ordered steps to implement this chunk. Each step should be:
-- Small enough to reason about in isolation
-- Large enough to be meaningful
-- Clear about its inputs and outputs
+### Step 1: Write prompt formatter tests
 
-This sequence is your contract with yourself (and with agents).
-Work through it in order. Don't skip ahead.
+Create `tests/test_prompt_reward_bridge.py` with tests for `format_chat_prompt`:
 
-Example:
+- **`test_returns_two_message_list`**: Given a problem dict from any ability,
+  returns a list of exactly 2 dicts with `role` keys `"system"` and `"user"`.
+- **`test_system_message_contains_think_answer_instructions`**: The system
+  message content instructs the model to use `<think>` and `<answer>` tags.
+- **`test_user_message_contains_puzzle_text`**: The user message content
+  contains the problem's `puzzle_text` verbatim.
+- **`test_all_abilities_produce_valid_prompts`**: Parametrize across deduction,
+  induction, abduction — each produces well-formed chat messages.
+- **`test_different_difficulty_levels`**: Parametrize across levels 1-3 (keep
+  fast) — prompt structure is consistent regardless of difficulty.
 
-### Step 1: Define the SegmentHeader struct
+Tests use pre-built problem fixtures (not live generators) to stay fast per
+TESTING_PHILOSOPHY.md unit test guidelines.
 
-Create the struct that represents a segment's header with fields for:
-- magic number (4 bytes)
-- version (2 bytes)
-- segment_id (8 bytes)
-- message_count (4 bytes)
-- checksum (4 bytes)
+Location: `tests/test_prompt_reward_bridge.py`
 
-Location: src/segment/format.rs
+### Step 2: Implement prompt formatter
 
-### Step 2: Implement header serialization
+Create `src/repro_maa/prompt_reward_bridge.py` with:
 
-Add `to_bytes()` and `from_bytes()` methods to SegmentHeader.
-Use little-endian encoding per SPEC.md Section 3.1.
-
-### Step 3: ...
-
----
-
-**BACKREFERENCE COMMENTS**
-
-When implementing code, add backreference comments to help future agents trace
-code back to its governing documentation.
-
-**Valid backreference types:**
-- `# Subsystem: docs/subsystems/<name>` - For architectural patterns
-- `# Chunk: docs/chunks/<name>` - For implementation work
-
-Place comments at the appropriate level:
-- **Module-level**: If this code implements the subsystem/chunk's core functionality
-- **Class-level**: If this class is part of the pattern
-- **Method-level**: If this method implements a specific behavior
-
-Format (place immediately before the symbol):
-```
-# Subsystem: docs/subsystems/workflow_artifacts - Workflow artifact manager pattern
-# Chunk: docs/chunks/auth_refactor - Authentication system redesign
+```python
+def format_chat_prompt(problem: dict) -> list[dict[str, str]]:
 ```
 
-Do NOT add narrative backreferences. Narratives decompose into chunks; reference
-the implementing chunk instead.
+The function takes a problem dict (as returned by `TaskCell.generate()`) and
+returns a chat message list:
 
-**Task context note**: In multi-project tasks, always use local paths (e.g.,
-`docs/chunks/chunk_name`) for chunk backreferences, not paths to the external
-artifact repo. Each project has `external.yaml` pointers that resolve to the
-actual chunk content.
--->
+```python
+[
+    {"role": "system", "content": "<system prompt with think/answer instructions>"},
+    {"role": "user", "content": problem["puzzle_text"]},
+]
+```
+
+The system message should:
+- Instruct the model to reason step-by-step inside `<think>...</think>` tags
+- Instruct the model to place its final answer inside `<answer>...</answer>` tags
+- Be concise — this is a formatting instruction, not a long prompt
+
+Add module-level backreference comment:
+`# Chunk: docs/chunks/prompt_reward_bridge - Prompt formatting and reward adaptation`
+
+Run tests from Step 1 — they should pass.
+
+Location: `src/repro_maa/prompt_reward_bridge.py`
+
+### Step 3: Write reward adapter tests
+
+Add tests for `make_reward_func` to `tests/test_prompt_reward_bridge.py`:
+
+- **`test_reward_func_returns_list_of_floats`**: Given a list of completions
+  and matching ground_truths, returns a list of floats with the same length.
+- **`test_reward_parity_with_task_cell_score`**: For each ability, generate a
+  problem, create a known-correct completion (wrapping the solution in
+  `<think>...<answer>...</answer>` format), and verify the adapter returns
+  the same score as calling `TaskCell.score()` directly. This is the core
+  parity test from Success Criterion #4.
+- **`test_reward_parity_wrong_answers`**: Same as above but with wrong answers
+  — verify negative scores match.
+- **`test_multiple_completions_scored_independently`**: Pass a batch of 3
+  completions (some correct, some wrong) — verify each is scored independently
+  and the list has the correct length.
+- **`test_trl_calling_convention`**: Call the reward function with the exact
+  signature TRL uses: `reward_func(completions=..., ground_truth=..., **kwargs)`.
+  Verify it doesn't crash and returns the right shape. This is the integration
+  test from Success Criterion #5.
+
+Location: `tests/test_prompt_reward_bridge.py`
+
+### Step 4: Implement reward adapter
+
+Add to `src/repro_maa/prompt_reward_bridge.py`:
+
+```python
+def make_reward_func(ability: str) -> Callable:
+```
+
+This factory returns a function with TRL's `reward_funcs` signature:
+
+```python
+def reward_func(completions: list[str], ground_truth: list[dict], **kwargs) -> list[float]:
+```
+
+Internally, it:
+1. Creates a `TaskCell` for the given ability (level doesn't matter for scoring —
+   the MAA scorers only use the `ground_truth` dict, not difficulty parameters).
+2. For each `(completion, gt)` pair, calls `cell.score(completion, gt)`.
+3. Returns the list of float scores.
+
+The completion strings from TRL are the raw model outputs. The MAA scorers expect
+the format `"Assistant: <think>...</think><answer>...</answer>"`. The adapter must
+prepend `"Assistant: "` if TRL strips it, or document the expected format clearly.
+Investigate what TRL actually passes — if completions are raw generated text
+(without the "Assistant: " prefix), the adapter prepends it.
+
+Run tests from Step 3 — they should pass.
+
+Location: `src/repro_maa/prompt_reward_bridge.py`
+
+### Step 5: Add conftest fixtures for prompt_reward_bridge tests
+
+Add shared fixtures to `tests/conftest.py`:
+
+- `sample_problems`: A dict mapping each ability to a pre-generated problem dict
+  (with `puzzle_text` and `ground_truth`). Generated once via `TaskCell.generate(1)`
+  for each ability at level 1 with a fixed seed.
+- `correct_completions`: A dict mapping each ability to a completion string that
+  wraps the correct solution in `<think>...<answer>...</answer>` format.
+- `wrong_completions`: A dict mapping each ability to a completion string with
+  a deliberately wrong answer.
+
+These fixtures keep test code DRY and provide the "pre-built problem fixtures"
+referenced in Step 1.
+
+Location: `tests/conftest.py`
+
+### Step 6: Export from package and update GOAL.md code_paths
+
+1. Add `format_chat_prompt` and `make_reward_func` to `src/repro_maa/__init__.py`
+   exports in `__all__`.
+
+2. Update the `code_paths` field in `docs/chunks/prompt_reward_bridge/GOAL.md` to:
+   ```yaml
+   code_paths:
+     - src/repro_maa/prompt_reward_bridge.py
+     - tests/test_prompt_reward_bridge.py
+     - tests/conftest.py
+     - src/repro_maa/__init__.py
+   ```
+
+Location: `src/repro_maa/__init__.py`, `docs/chunks/prompt_reward_bridge/GOAL.md`
+
+### Step 7: Run full test suite and verify
+
+Run `pytest tests/test_prompt_reward_bridge.py -v` to verify all tests pass.
+Run `pytest tests/ -m "not slow"` to verify no regressions in existing tests.
 
 ## Dependencies
 
-<!--
-What must exist before this chunk can be implemented?
-- Other chunks that must be complete
-- External libraries to add
-- Infrastructure or configuration
-
-If there are no dependencies, delete this section.
--->
+- **Existing chunks (ACTIVE):** `taskcell_abstraction` provides `TaskCell` with
+  `generate()` and `score()`. `scaffold_project` provides `maa_compat` import shim.
+- **External libraries:** None new. The bridge uses only `TaskCell` from the
+  existing codebase. TRL is not imported here — the adapter merely conforms to
+  TRL's calling convention so `curiosity_grpo_loop` can pass it directly.
+- **MAA submodule:** Must be initialized (`git submodule update --init`) for
+  integration tests that call real generators/scorers.
 
 ## Risks and Open Questions
 
-<!--
-What might go wrong? What are you unsure about?
-Being explicit about uncertainty helps you (and agents) know where to
-be careful and when to stop and ask questions.
-
-Example:
-- fsync behavior may differ across filesystems; need to verify on ext4 and APFS
-- Unclear whether concurrent reads during write are safe; may need mutex
-- Performance target is aggressive; may need to iterate on buffer sizes
--->
+- **TRL completion format**: TRL's GRPOTrainer may pass completions as raw
+  generated text (just the model's output tokens) or as full conversation strings.
+  The MAA scorers expect `"Assistant: <think>...</think><answer>...</answer>"`.
+  The adapter should handle both cases — if the completion already starts with
+  `"Assistant:"`, pass through; otherwise prepend it. Verify against TRL source
+  during implementation.
+- **Ground truth passthrough**: TRL's `reward_funcs` receive extra dataset columns
+  via `**kwargs`. The `curiosity_grpo_loop` chunk must ensure `ground_truth` is
+  included as a dataset column so it flows through to the reward function. This
+  chunk documents the expectation; the downstream chunk implements it.
+- **Conversational vs string format**: TRL can pass completions as either plain
+  strings or conversation message lists depending on dataset format. Since
+  `curiosity_grpo_loop` will construct the dataset, we can control this — design
+  for string completions (simpler) and document the assumption.
 
 ## Deviations
 
 <!--
 POPULATE DURING IMPLEMENTATION, not at planning time.
-
-When reality diverges from the plan, document it here:
-- What changed?
-- Why?
-- What was the impact?
-
-Minor deviations (renamed a function, used a different helper) don't need
-documentation. Significant deviations (changed the approach, skipped a step,
-added steps) do.
-
-Example:
-- Step 4: Originally planned to use std::fs::rename for atomic swap.
-  Testing revealed this isn't atomic across filesystems. Changed to
-  write-fsync-rename-fsync sequence per platform best practices.
 -->
