@@ -8,153 +8,185 @@ to hand to an agent.
 
 ## Approach
 
-<!--
-How will you build this? Describe the strategy at a high level.
-What patterns or techniques will you use?
-What existing code will you build on?
+Create a new `src/repro_maa/visualize.py` module that reads JSONL simulation logs (via the existing `read_log()` / `StepRecord` from `simulation.py`) and produces four matplotlib figures as PNG files. The module exposes both a programmatic API (individual plot functions + a `generate_all` orchestrator) and a CLI entry point via `python -m repro_maa.visualize`.
 
-Reference docs/trunk/DECISIONS.md entries where relevant.
-If this approach represents a new significant decision, ask the user
-if we should add it to DECISIONS.md and reference it here.
+**Strategy:**
 
-Always include tests in your implementation plan and adhere to
-docs/trunk/TESTING_PHILOSOPHY.md in your planning.
+- **Pure consumer of existing data**: The module imports only `read_log` and `StepRecord` from `simulation.py`. It performs no simulation — it reads finished logs and plots them.
+- **One function per plot**: Each of the four success-criteria plots is an independent function that takes a list of `StepRecord` and returns a `matplotlib.figure.Figure`. This makes each plot unit-testable in isolation.
+- **`generate_all` orchestrator**: Accepts one or two log paths (curiosity + optional baseline), calls each plot function, saves PNGs to an output directory.
+- **Matplotlib with Agg backend**: Use the non-interactive `Agg` backend so the module works in headless environments (CI, remote servers) without display dependencies.
+- **Tests follow TESTING_PHILOSOPHY.md**: Structural tests verify that output files are created, figures have the expected number of axes, axes have correct labels/titles, and data arrays have expected shapes. No aesthetic assertions.
 
-Remember to update code_paths in the chunk's GOAL.md (e.g., docs/chunks/stream_visualization/GOAL.md)
-with references to the files that you expect to touch.
--->
+**Existing code leveraged:**
+
+- `simulation.read_log(path) -> list[StepRecord]` — log deserialization
+- `simulation.StepRecord` — the data schema (step, ability, level, mdl_score, selection_reason, batch_rewards, batch_mean_reward, cumulative_reward, reward_history_summary)
+- `simulation.compare_runs()` — for reference on cell frequency key format (`"{ability}_L{level}"`)
+- The 3×5 cell grid convention: abilities = `["deduction", "induction", "abduction"]`, levels = `[1, 2, 3, 4, 5]`
+
+**New dependency:** `matplotlib` added to `pyproject.toml` dependencies.
 
 ## Subsystem Considerations
 
-<!--
-Before designing your implementation, check docs/subsystems/ for relevant
-cross-cutting patterns.
-
-QUESTIONS TO CONSIDER:
-- Does this chunk touch any existing subsystem's scope?
-- Will this chunk implement part of a subsystem (contribute code) or use it
-  (depend on it)?
-- Did you discover code during exploration that should be part of a subsystem
-  but doesn't follow its patterns?
-
-If no subsystems are relevant, delete this section.
-
-WHEN SUBSYSTEMS ARE RELEVANT:
-List each relevant subsystem with its status and your relationship:
-- **docs/subsystems/validation** (DOCUMENTED): This chunk USES the validation
-  subsystem to check input
-- **docs/subsystems/error_handling** (REFACTORING): This chunk IMPLEMENTS a
-  new error type following the subsystem's patterns
-
-HOW SUBSYSTEM STATUS AFFECTS YOUR WORK:
-
-DOCUMENTED subsystems: The subsystem's patterns are captured but deviations are not
-being actively fixed. If you discover code that deviates from the subsystem's
-patterns, add it to the subsystem's Known Deviations section. Do NOT prioritize
-fixing those deviations—your chunk has its own goals.
-
-REFACTORING subsystems: The subsystem is being actively consolidated. If your chunk
-work touches code that deviates from the subsystem's patterns, attempt to bring it
-into compliance as part of your work. This is "opportunistic improvement"—improve
-what you touch, but don't expand scope to fix unrelated deviations.
-
-WHEN YOU DISCOVER DEVIATING CODE:
-- Add it to the subsystem's Known Deviations section
-- Note whether you will address it (REFACTORING status + relevant to your work)
-  or leave it for future work (DOCUMENTED status or outside your chunk's scope)
-
-Example:
-- **Discovered deviation**: src/legacy/parser.py#validate_input does its own
-  validation instead of using the validation subsystem
-  - Added to docs/subsystems/validation Known Deviations
-  - Action: Will not address (subsystem is DOCUMENTED; deviation outside chunk scope)
--->
+No existing subsystems are relevant. This chunk is a pure leaf consumer of the simulation log data.
 
 ## Sequence
 
-<!--
-Ordered steps to implement this chunk. Each step should be:
-- Small enough to reason about in isolation
-- Large enough to be meaningful
-- Clear about its inputs and outputs
+Add `# Chunk: docs/chunks/stream_visualization` backreference at module level in `visualize.py` and on the CLI entry point in `__main__.py`.
 
-This sequence is your contract with yourself (and with agents).
-Work through it in order. Don't skip ahead.
+### Step 1: Add matplotlib dependency
 
-Example:
+Add `matplotlib` to the `dependencies` list in `pyproject.toml`.
 
-### Step 1: Define the SegmentHeader struct
+Location: `pyproject.toml`
 
-Create the struct that represents a segment's header with fields for:
-- magic number (4 bytes)
-- version (2 bytes)
-- segment_id (8 bytes)
-- message_count (4 bytes)
-- checksum (4 bytes)
+### Step 2: Write structural tests for all four plots and the CLI
 
-Location: src/segment/format.rs
+Write `tests/test_visualize.py` with tests that create synthetic `StepRecord` lists (reusing patterns from `test_simulation.py`) and assert structural properties of each plot. Tests are written first per TDD — they will fail until the implementation exists.
 
-### Step 2: Implement header serialization
+**Test fixtures (in conftest or local):**
+- `make_records(n, strategy)` — helper that produces a list of `n` `StepRecord` objects with plausible data for either `"curiosity"` or `"fixed_schedule"` selection_reason. Vary ability/level across steps so plots are non-trivial.
+- Use `matplotlib.pyplot.close("all")` in teardown to avoid resource leaks.
 
-Add `to_bytes()` and `from_bytes()` methods to SegmentHeader.
-Use little-endian encoding per SPEC.md Section 3.1.
+**Tests to write:**
 
-### Step 3: ...
+1. `test_cell_selection_timeline_axes` — calls `plot_cell_selection_timeline(records)`, asserts: returns a `Figure`, has 1 `Axes`, x-axis spans `[0, n-1]` (steps), y-axis has tick labels for the cell identifiers, title contains "selection".
+2. `test_cell_selection_timeline_two_streams` — calls with both curiosity and baseline records, asserts: figure has 2 subplots (one per stream), or a single axes with two distinct series.
+3. `test_mdl_score_evolution_axes` — calls `plot_mdl_evolution(records)`, asserts: returns a `Figure`, has at least 1 line plotted per cell that had non-zero MDL scores, x-axis is steps, y-axis label references "MDL".
+4. `test_cumulative_reward_comparison` — calls `plot_cumulative_reward(curiosity_records, baseline_records)`, asserts: returns a `Figure`, has exactly 2 lines, y-axis label references "reward", legend has 2 entries.
+5. `test_selection_heatmap_shape` — calls `plot_selection_heatmap(curiosity_records, baseline_records)`, asserts: returns a `Figure`, has 2 subplots (side by side), each subplot shows a 3×5 grid (abilities × levels).
+6. `test_generate_all_creates_png_files` — calls `generate_all(curiosity_log_path, baseline_log_path, output_dir)` with temp paths, asserts: 4 PNG files are created in `output_dir` with expected filenames.
+7. `test_generate_all_single_log` — calls `generate_all` with only a curiosity log (no baseline), asserts: the plots that don't need a baseline still produce files; cumulative reward plot shows one line; heatmap shows one panel.
+8. `test_cli_runs_successfully` — invokes `python -m repro_maa.visualize <log_path> --output-dir <tmpdir>` via `subprocess.run`, asserts: exit code 0, PNG files exist in output dir.
 
----
+Location: `tests/test_visualize.py`
 
-**BACKREFERENCE COMMENTS**
+### Step 3: Implement data extraction helpers
 
-When implementing code, add backreference comments to help future agents trace
-code back to its governing documentation.
+Create `src/repro_maa/visualize.py` with helper functions that transform `list[StepRecord]` into plot-ready data structures.
 
-**Valid backreference types:**
-- `# Subsystem: docs/subsystems/<name>` - For architectural patterns
-- `# Chunk: docs/chunks/<name>` - For implementation work
+Functions:
 
-Place comments at the appropriate level:
-- **Module-level**: If this code implements the subsystem/chunk's core functionality
-- **Class-level**: If this class is part of the pattern
-- **Method-level**: If this method implements a specific behavior
+- `_cell_key(ability: str, level: int) -> str` — returns `"{ability} L{level}"` display label.
+- `_extract_selections(records: list[StepRecord]) -> tuple[list[int], list[str]]` — returns `(steps, cell_labels)` where each entry is the step number and the selected cell's display label.
+- `_extract_mdl_timeseries(records: list[StepRecord]) -> dict[str, list[tuple[int, float]]]` — returns `{cell_label: [(step, mdl_score), ...]}` by scanning `reward_history_summary` for each step. Only the *selected* cell's MDL score is directly available (`record.mdl_score`), so this function records `(step, mdl_score)` for the selected cell at each step. For the MDL evolution plot, we track per-cell scores from the `reward_history_summary` — since full per-cell MDL isn't logged, we plot the selected cell's MDL at each step as the primary series, and optionally reconstruct approximate MDL trajectories from the reward history counts.
+- `_extract_cumulative_rewards(records: list[StepRecord]) -> tuple[list[int], list[float]]` — returns `(steps, cumulative_rewards)`.
+- `_extract_selection_counts(records: list[StepRecord]) -> np.ndarray` — returns a 3×5 numpy array (rows = abilities in order `["deduction", "induction", "abduction"]`, cols = levels 1–5) with selection counts.
 
-Format (place immediately before the symbol):
+Location: `src/repro_maa/visualize.py`
+
+### Step 4: Implement `plot_cell_selection_timeline`
+
+```python
+def plot_cell_selection_timeline(
+    curiosity_records: list[StepRecord],
+    baseline_records: list[StepRecord] | None = None,
+) -> Figure:
 ```
-# Subsystem: docs/subsystems/workflow_artifacts - Workflow artifact manager pattern
-# Chunk: docs/chunks/auth_refactor - Authentication system redesign
+
+Creates a figure with 1 or 2 subplots (stacked vertically). Each subplot is a scatter/strip plot with step on x-axis and cell label on y-axis. Points are color-coded by ability (3 colors: one for deduction, one for induction, one for abduction). Y-axis tick labels are the 15 cell names sorted by ability then level.
+
+Subplot titles: "Curiosity-Driven" and "Fixed Curriculum".
+
+Location: `src/repro_maa/visualize.py`
+
+### Step 5: Implement `plot_mdl_evolution`
+
+```python
+def plot_mdl_evolution(records: list[StepRecord]) -> Figure:
 ```
 
-Do NOT add narrative backreferences. Narratives decompose into chunks; reference
-the implementing chunk instead.
+Line plot showing MDL score over time. Since only the selected cell's MDL score is recorded per step, plot one line per cell showing the MDL score at steps when that cell was selected (connected with lines). Cells that are never selected won't have data and are omitted from the legend.
 
-**Task context note**: In multi-project tasks, always use local paths (e.g.,
-`docs/chunks/chunk_name`) for chunk backreferences, not paths to the external
-artifact repo. Each project has `external.yaml` pointers that resolve to the
-actual chunk content.
--->
+X-axis: step. Y-axis: MDL score. Legend: cell labels. Lines color-coded by ability, with different line styles per level (solid for L1, dashed for L2, etc.).
+
+Location: `src/repro_maa/visualize.py`
+
+### Step 6: Implement `plot_cumulative_reward`
+
+```python
+def plot_cumulative_reward(
+    curiosity_records: list[StepRecord],
+    baseline_records: list[StepRecord] | None = None,
+) -> Figure:
+```
+
+Simple two-line (or one-line) plot. X-axis: step. Y-axis: cumulative reward. One line per strategy with distinct colors and a legend ("Curiosity-Driven", "Fixed Curriculum"). Grid enabled for readability.
+
+Location: `src/repro_maa/visualize.py`
+
+### Step 7: Implement `plot_selection_heatmap`
+
+```python
+def plot_selection_heatmap(
+    curiosity_records: list[StepRecord],
+    baseline_records: list[StepRecord] | None = None,
+) -> Figure:
+```
+
+Creates 1 or 2 subplots side by side. Each subplot uses `imshow` (or `pcolormesh`) to render a 3×5 heatmap where rows are abilities and columns are levels 1–5. Cell values are selection counts, annotated with the count number. Use a sequential colormap (e.g., `"YlOrRd"`). Subplot titles: "Curiosity-Driven" / "Fixed Curriculum". Axis labels: abilities on y-axis, levels on x-axis.
+
+Location: `src/repro_maa/visualize.py`
+
+### Step 8: Implement `generate_all` orchestrator
+
+```python
+def generate_all(
+    curiosity_log_path: Path,
+    baseline_log_path: Path | None = None,
+    output_dir: Path = Path("plots"),
+) -> list[Path]:
+```
+
+1. Read logs via `read_log()`.
+2. Set matplotlib backend to `"Agg"`.
+3. Call each plot function.
+4. Save each figure to `output_dir/` with filenames:
+   - `cell_selection_timeline.png`
+   - `mdl_evolution.png`
+   - `cumulative_reward.png`
+   - `selection_heatmap.png`
+5. Close all figures.
+6. Return list of output paths.
+
+Creates `output_dir` if it doesn't exist.
+
+Location: `src/repro_maa/visualize.py`
+
+### Step 9: Implement CLI entry point
+
+Create `src/repro_maa/__main__.py` (or add a block to `visualize.py`) so that `python -m repro_maa.visualize` works.
+
+CLI interface using `argparse`:
+```
+python -m repro_maa.visualize <curiosity_log> [--baseline <baseline_log>] [--output-dir <dir>]
+```
+
+Arguments:
+- `curiosity_log` (positional, required) — path to the curiosity-driven JSONL log
+- `--baseline` (optional) — path to the fixed-curriculum baseline JSONL log
+- `--output-dir` (optional, default `"plots"`) — directory for output PNGs
+
+The entry point calls `generate_all()` and prints the paths of created files.
+
+Location: `src/repro_maa/visualize.py` (with `if __name__ == "__main__"` block) — invocable as `python -m repro_maa.visualize` via a thin `__main__.py` that imports and calls the CLI function.
+
+### Step 10: Run tests and iterate
+
+Run `pytest tests/test_visualize.py -v` and fix any failures. Verify all 8 tests pass. Then run the full suite (`pytest tests/ -m "not slow"`) to ensure no regressions.
 
 ## Dependencies
 
-<!--
-What must exist before this chunk can be implemented?
-- Other chunks that must be complete
-- External libraries to add
-- Infrastructure or configuration
-
-If there are no dependencies, delete this section.
--->
+- **simulation_harness chunk** (complete): Provides `StepRecord`, `read_log()`, `write_log()`, `compare_runs()`, and the JSONL log format that this chunk consumes.
+- **matplotlib** (new dependency): Must be added to `pyproject.toml`. Used for all plot generation.
+- **numpy** (already in dependencies): Used for heatmap array construction.
 
 ## Risks and Open Questions
 
-<!--
-What might go wrong? What are you unsure about?
-Being explicit about uncertainty helps you (and agents) know where to
-be careful and when to stop and ask questions.
-
-Example:
-- fsync behavior may differ across filesystems; need to verify on ext4 and APFS
-- Unclear whether concurrent reads during write are safe; may need mutex
-- Performance target is aggressive; may need to iterate on buffer sizes
--->
+- **MDL evolution per non-selected cells**: The JSONL log only records the MDL score for the *selected* cell at each step. Full per-cell MDL trajectories would require re-computing MDL from `reward_history_summary`, but that summary only contains mean/count (not the full reward window needed for MDL). The plan addresses this by plotting MDL only at steps where a cell was selected — this still shows the trajectory, just with gaps. If this proves unsatisfying, we could reconstruct approximate scores from mean/count, but that's a stretch goal.
+- **Large logs**: With thousands of steps, scatter plots may become dense. Consider downsampling or alpha transparency. This is an aesthetic concern and should be addressed during implementation if needed, not over-engineered upfront.
+- **CLI entry point naming**: The GOAL says `python -m curiosity_stream.visualize` but the package is `repro_maa`. We'll implement `python -m repro_maa.visualize` to match the actual package name. The GOAL wording appears to use an older name for the package.
 
 ## Deviations
 
