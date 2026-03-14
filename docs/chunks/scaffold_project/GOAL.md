@@ -13,7 +13,7 @@ code_references:
   - ref: pyproject.toml
     implements: "Project metadata, Python >=3.10 requirement, and dependency declarations (openai, numpy, pytest)"
   - ref: src/repro_maa/__init__.py
-    implements: "Package marker with version string"
+    implements: "Package public API surface: version string and re-exports of BatchResult, CuriosityStream, MDLScorer, TaskCell"
   - ref: src/repro_maa/maa_compat.py#REPO_ROOT
     implements: "Repository root path constant for locating MAA submodule"
   - ref: src/repro_maa/maa_compat.py#_temporary_sys_path
