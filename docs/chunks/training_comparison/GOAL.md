@@ -1,18 +1,26 @@
 ---
-status: FUTURE
+status: IMPLEMENTING
 ticket: null
 parent_chunk: null
-code_paths: []
+code_paths:
+- src/repro_maa/compare_training.py
+- tests/test_compare_training.py
+- src/repro_maa/__init__.py
 code_references: []
 narrative: curiosity_training_run
 investigation: null
 subsystems: []
 friction_entries: []
 bug_type: null
-depends_on: ["curiosity_grpo_loop"]
-created_after: ["mdl_curiosity_scorer", "simulation_harness", "stream_generator", "stream_visualization", "taskcell_abstraction"]
+depends_on:
+- curiosity_grpo_loop
+created_after:
+- mdl_curiosity_scorer
+- simulation_harness
+- stream_generator
+- stream_visualization
+- taskcell_abstraction
 ---
-
 <!--
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  DO NOT DELETE THIS COMMENT BLOCK until the chunk complete command is run.   ║

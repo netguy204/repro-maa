@@ -3,6 +3,11 @@
 
 __version__ = "0.1.0"
 
+from repro_maa.compare_training import (  # noqa: F401
+    ComparisonConfig,
+    generate_report,
+    run_comparison,
+)
 from repro_maa.mdl_scorer import MDLScorer  # noqa: F401
 from repro_maa.simulation import (  # noqa: F401
     FixedCurriculumBaseline,
@@ -20,6 +25,7 @@ from repro_maa.task_cell import TaskCell  # noqa: F401
 
 __all__ = [
     "BatchResult",
+    "ComparisonConfig",
     "CuriosityStream",
     "FixedCurriculumBaseline",
     "MDLScorer",
@@ -28,6 +34,8 @@ __all__ = [
     "TaskCell",
     "compare_runs",
     "format_chat_prompt",
+    "generate_report",
     "make_reward_func",
+    "run_comparison",
     "run_simulation",
 ]
