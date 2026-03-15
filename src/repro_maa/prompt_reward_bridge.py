@@ -24,7 +24,27 @@ from __future__ import annotations
 
 from typing import Callable
 
+import re
+
 from repro_maa.task_cell import TaskCell
+
+# ---------------------------------------------------------------------------
+# Format scoring
+# ---------------------------------------------------------------------------
+
+_EXPECTED_TAGS = ["<think>", "</think>", "<answer>", "</answer>"]
+_FORMAT_WEIGHT = 1.0  # max reward for perfect format
+
+
+def _format_score(text: str) -> float:
+    """Score format as (tags present / tags expected) * weight.
+
+    Returns a value in [0, _FORMAT_WEIGHT].  Each of the four expected
+    tags contributes equally.  This gives the model a continuous signal
+    for partial format compliance rather than all-or-nothing.
+    """
+    present = sum(1 for tag in _EXPECTED_TAGS if tag in text)
+    return (present / len(_EXPECTED_TAGS)) * _FORMAT_WEIGHT
 
 
 # ---------------------------------------------------------------------------
@@ -106,15 +126,24 @@ def make_reward_func(ability: str) -> Callable[..., list[float]]:
                 )
             else:
                 text = completion
-            # MAA scorers expect "Assistant: <think>...</think><answer>...</answer>"
-            # The model often produces </think><answer>...</answer> without
-            # the opening <think> tag.  Prepend it so partial format attempts
-            # get credit rather than the same -3 as zero-tag completions.
-            if "</think>" in text and "<think>" not in text:
-                text = "<think>" + text
-            if not text.startswith("Assistant:"):
-                text = f"Assistant: {text}"
-            scores.append(float(cell.score(text, gt)))
+
+            # Continuous format score: tags_present / tags_expected * weight.
+            # This gives gradient signal for partial format compliance
+            # (e.g. 3/4 tags = 0.75) instead of binary pass/fail.
+            fmt = _format_score(text)
+
+            # Content score: extract <answer> content and check correctness.
+            # Prepend missing <think> so the MAA scorer can parse the answer.
+            score_text = text
+            if "</think>" in score_text and "<think>" not in score_text:
+                score_text = "<think>" + score_text
+            if not score_text.startswith("Assistant:"):
+                score_text = f"Assistant: {score_text}"
+            maa_score = float(cell.score(score_text, gt))
+
+            # Combine: format component (0 to 1) + MAA score (-3 to +3).
+            # This ensures partial format always beats zero format.
+            scores.append(fmt + maa_score)
         return scores
 
     return reward_func
