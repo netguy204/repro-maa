@@ -1,5 +1,5 @@
 ---
-status: DRAFTING
+status: COMPLETED
 advances_trunk_goal: "Success Criteria #4: Baseline comparison via real training — train with curiosity-driven vs fixed curriculum and compare reward curves"
 proposed_chunks:
   - prompt: "Build the glue layer between the existing MAA task generators and TRL's GRPOTrainer. Adapt TaskCell problems into Qwen3.5-9B chat prompt format (system message + user problem statement, expecting <think>...</think><answer>...</answer> responses). Wrap the MAA reward functions (formula.py, backward_reasoning.py, squence.py) into TRL's reward_funcs interface — each function receives a list of completions and returns a list of float rewards. Include tests that verify prompt formatting round-trips and reward scoring matches the existing MAA functions."
