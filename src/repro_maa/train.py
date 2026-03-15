@@ -138,7 +138,7 @@ class TrainConfig:
     num_rounds: int = 100
     batch_size: int = 4
     num_generations: int = 4
-    per_device_train_batch_size: int = 2
+    per_device_train_batch_size: int = 4
     max_prompt_length: int = 512
     max_completion_length: int = 512
     learning_rate: float = 1e-6
