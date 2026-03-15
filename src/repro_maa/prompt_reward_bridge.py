@@ -33,8 +33,11 @@ from repro_maa.task_cell import TaskCell
 
 _SYSTEM_PROMPT = (
     "You are a reasoning assistant. "
-    "Think step-by-step inside <think>...</think> tags. "
-    "Then give your final answer inside <answer>...</answer> tags."
+    "First, reason step-by-step inside <think> and </think> tags. "
+    "Then, provide your final answer inside <answer> and </answer> tags. "
+    "Example format:\n"
+    "<think>\nStep 1: analyze the problem\nStep 2: work out the solution\n</think>\n"
+    "<answer>42</answer>"
 )
 
 
