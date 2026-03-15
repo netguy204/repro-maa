@@ -201,6 +201,7 @@ def run_training(config: TrainConfig) -> list[StepRecord]:
     list[StepRecord]
         The full training trace (one record per round).
     """
+    import gc
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from trl import GRPOConfig, GRPOTrainer
@@ -303,6 +304,13 @@ def run_training(config: TrainConfig) -> list[StepRecord]:
         # generated completions.  This is more reliable than parsing
         # trainer internal metrics.
         batch_rewards = _extract_rewards(trainer, reward_func, batch)
+
+        # 5e'. Clean up trainer to prevent memory leak — each round
+        # creates a new GRPOTrainer with its own optimizer/accelerator
+        # state. Without explicit cleanup, GPU memory grows every round.
+        del trainer
+        gc.collect()
+        torch.cuda.empty_cache()
 
         # 5f. Feed rewards back to the curriculum
         cell = _find_cell(cells, batch.ability, batch.level)
