@@ -88,17 +88,24 @@ def make_reward_func(ability: str) -> Callable[..., list[float]]:
     cell = TaskCell(ability, level=1)
 
     def reward_func(
-        completions: list[str],
+        completions,
         *,
         ground_truth: list[dict],
         **kwargs: object,
     ) -> list[float]:
         scores: list[float] = []
         for completion, gt in zip(completions, ground_truth):
-            # TRL passes raw model output tokens. MAA scorers expect the
-            # "Assistant: <think>...</think><answer>...</answer>" format.
-            # Prepend the prefix when it is absent.
-            text = completion if completion.startswith("Assistant:") else f"Assistant: {completion}"
+            # TRL may pass completions as list[str] or list[list[dict]]
+            # (chat messages). Extract text content in either case.
+            if isinstance(completion, list):
+                text = " ".join(
+                    msg.get("content", "") for msg in completion if isinstance(msg, dict)
+                )
+            else:
+                text = completion
+            # MAA scorers expect "Assistant: <think>...</think><answer>...</answer>"
+            if not text.startswith("Assistant:"):
+                text = f"Assistant: {text}"
             scores.append(float(cell.score(text, gt)))
         return scores
 

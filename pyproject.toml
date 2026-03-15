@@ -21,6 +21,9 @@ dev = [
     "pytest",
 ]
 
+[tool.uv]
+extra-index-url = ["https://download.pytorch.org/whl/cu130"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
