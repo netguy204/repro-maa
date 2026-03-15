@@ -255,9 +255,11 @@ def run_bench(num_rounds: int = NUM_ROUNDS_SMOKE) -> dict:
             "detail": f"insufficient rounds ({len(mean_rewards)}) for trend analysis",
         }
 
-    # Compute val_metric (mean reward across all rounds)
+    # Compute val_metric (mean reward over last 5 rounds — where the
+    # policy ended up, not diluted by early untrained rounds)
     if mean_rewards:
-        results["val_metric"] = sum(mean_rewards) / len(mean_rewards)
+        tail = mean_rewards[-5:]
+        results["val_metric"] = sum(tail) / len(tail)
 
     # Per-round reward progression for the log
     if mean_rewards:
