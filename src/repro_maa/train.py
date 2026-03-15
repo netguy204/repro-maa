@@ -364,10 +364,14 @@ def _extract_rewards(
     # intercept rewards via a callback, but that adds complexity beyond
     # the current scope.
     metrics = trainer.state.log_history
-    if metrics:
-        last = metrics[-1]
-        mean_reward = last.get("reward/mean", last.get("reward", 0.0))
-        return [float(mean_reward)] * len(batch.problems)
+    # log_history contains multiple entries; the reward is in the step
+    # metrics dict, not the final train_runtime summary.  Search backwards
+    # for the first entry that has a reward key.
+    for entry in reversed(metrics):
+        for key in ("reward/mean", "reward"):
+            if key in entry:
+                mean_reward = float(entry[key])
+                return [mean_reward] * len(batch.problems)
 
     return [0.0] * len(batch.problems)
 
