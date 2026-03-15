@@ -137,6 +137,13 @@ def make_reward_func(ability: str) -> Callable[..., list[float]]:
             else:
                 text = completion
 
+            # Log the raw model output before any mangling.
+            print(f"\n[Raw Completion] ({len(text)} chars, "
+                  f"fmt={sum(1 for t in _EXPECTED_TAGS if t in text)}/4 tags)")
+            print(text[:2000])
+            if len(text) > 2000:
+                print(f"... ({len(text) - 2000} more chars)")
+
             # Continuous format score: tags_present / tags_expected * weight.
             # This gives gradient signal for partial format compliance
             # (e.g. 3/4 tags = 0.75) instead of binary pass/fail.

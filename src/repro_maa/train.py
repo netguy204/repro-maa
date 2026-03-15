@@ -307,10 +307,14 @@ def run_training(config: TrainConfig) -> list[StepRecord]:
 
         # 5e'. Clean up trainer to prevent memory leak — each round
         # creates a new GRPOTrainer with its own optimizer/accelerator
-        # state. Without explicit cleanup, GPU memory grows every round.
-        del trainer
+        # state. Without explicit cleanup, memory grows every round.
+        del trainer, train_output, dataset
         gc.collect()
         torch.cuda.empty_cache()
+        if i % 10 == 0:
+            alloc = torch.cuda.memory_allocated() / 1e9
+            reserved = torch.cuda.memory_reserved() / 1e9
+            logger.info("Memory after round %d: allocated=%.1fGB reserved=%.1fGB", i, alloc, reserved)
 
         # 5f. Feed rewards back to the curriculum
         cell = _find_cell(cells, batch.ability, batch.level)
