@@ -251,6 +251,7 @@ def run_training(config: TrainConfig) -> list[StepRecord]:
         output_dir=str(output_dir / "grpo"),
         per_device_train_batch_size=config.per_device_train_batch_size,
         num_generations=config.num_generations,
+        generation_batch_size=config.num_generations,
         max_completion_length=config.max_completion_length,
         learning_rate=config.learning_rate,
         bf16=config.bf16,
