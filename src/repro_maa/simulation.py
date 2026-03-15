@@ -325,11 +325,16 @@ def run_simulation(
     for _ in range(n_steps):
         batch = stream.emit_batch()
 
-        # Agent scores each problem
-        rewards = [
-            agent.respond(problem, batch.ability, batch.level)
-            for problem in batch.problems
-        ]
+        # Agent scores each problem (use batch API if available)
+        if hasattr(agent, "respond_batch"):
+            rewards = agent.respond_batch(
+                batch.problems, batch.ability, batch.level
+            )
+        else:
+            rewards = [
+                agent.respond(problem, batch.ability, batch.level)
+                for problem in batch.problems
+            ]
 
         # Feed rewards back to stream
         # For CuriosityStream, we need to find the cell object
@@ -434,6 +439,12 @@ class LiveAgent:
 
     Sends problem text to an OpenAI-compatible completions API and scores
     the response using the MAA reward functions via ``TaskCell.score()``.
+    Batches concurrent requests for throughput (the endpoint handles
+    concurrent requests well — ~35 tok/s at batch>=8).
+
+    The LLM's ``reasoning_content`` (thinking) and ``content`` (answer) are
+    combined into the ``<think>...</think><answer>...</answer>`` format that
+    the MAA reward functions expect.
 
     Parameters
     ----------
@@ -443,36 +454,69 @@ class LiveAgent:
         Base URL of the OpenAI-compatible API.
     model : str
         Model name to request.
+    max_workers : int
+        Concurrent request threads for ``respond_batch()``.
+    max_tokens : int
+        Maximum tokens per LLM completion.
     """
+
+    _SYSTEM_PROMPT = (
+        "You are solving a reasoning puzzle. Think through the problem, "
+        "then provide your final answer inside <answer> tags. "
+        "Be concise in your reasoning — focus on reaching the answer."
+    )
 
     def __init__(
         self,
         cells: list[TaskCell],
         endpoint: str = "http://100.88.102.33:8000/v1",
         model: str = "default",
+        max_workers: int = 8,
+        max_tokens: int = 8196,
     ) -> None:
         self._cells = {(c.ability, c.level): c for c in cells}
         self._endpoint = endpoint
         self._model = model
+        self._max_workers = max_workers
+        self._max_tokens = max_tokens
 
-    def respond(self, problem: dict, ability: str, level: int) -> float:
-        """Send the problem to the LLM and score the response.
-
-        Returns the MAA reward score, or -3.0 if the endpoint is
-        unreachable.
-        """
+    def _call_llm(self, prompt: str) -> str:
+        """Send a single prompt to the LLM, return formatted response."""
         import openai
 
-        client = openai.OpenAI(base_url=self._endpoint, api_key="not-needed")
-
-        prompt = problem.get("puzzle_text", "")
+        client = openai.OpenAI(
+            base_url=self._endpoint,
+            api_key="not-needed",
+            timeout=600.0,
+        )
         try:
             completion = client.chat.completions.create(
                 model=self._model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": self._SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=self._max_tokens,
             )
-            response_text = completion.choices[0].message.content or ""
-        except Exception:
+            msg = completion.choices[0].message
+            thinking = getattr(msg, "reasoning_content", None) or ""
+            content = msg.content or ""
+
+            # If the model already produced <answer> tags, use content as-is
+            if "<answer>" in content and "</answer>" in content:
+                return f"<|im_start|>assistant\n<think>{thinking}</think>{content}"
+
+            # Otherwise, wrap the response in the MAA format
+            return f"<|im_start|>assistant\n<think>{thinking}</think><answer>{content}</answer>"
+        except Exception as e:
+            print(f"  [LLM error: {e}]", flush=True)
+            return ""
+
+    def respond(self, problem: dict, ability: str, level: int) -> float:
+        """Send the problem to the LLM and score the response."""
+        prompt = problem.get("puzzle_text", "")
+        response_text = self._call_llm(prompt)
+        if not response_text:
             return -3.0
 
         cell = self._cells.get((ability, level))
@@ -481,3 +525,35 @@ class LiveAgent:
 
         ground_truth = problem.get("ground_truth", {})
         return cell.score(response_text, ground_truth)
+
+    def respond_batch(
+        self, problems: list[dict], ability: str, level: int
+    ) -> list[float]:
+        """Score a batch of problems concurrently.
+
+        Uses a thread pool to send all problems in parallel, then scores
+        each response.
+        """
+        import concurrent.futures
+
+        prompts = [p.get("puzzle_text", "") for p in problems]
+
+        # Concurrent LLM calls
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self._max_workers
+        ) as executor:
+            responses = list(executor.map(self._call_llm, prompts))
+
+        # Score each response
+        cell = self._cells.get((ability, level))
+        if cell is None:
+            return [-3.0] * len(problems)
+
+        rewards = []
+        for problem, response_text in zip(problems, responses):
+            if not response_text:
+                rewards.append(-3.0)
+            else:
+                ground_truth = problem.get("ground_truth", {})
+                rewards.append(cell.score(response_text, ground_truth))
+        return rewards
