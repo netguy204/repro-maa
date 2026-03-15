@@ -34,6 +34,8 @@ from repro_maa.task_cell import TaskCell
 
 _EXPECTED_TAGS = ["<think>", "</think>", "<answer>", "</answer>"]
 _FORMAT_WEIGHT = 1.0  # max reward for perfect format
+_CONTENT_CORRECT = 2.0  # reward for correct answer content
+_CONTENT_WRONG = -1.0  # penalty for wrong but parseable answer
 
 
 def _format_score(text: str) -> float:
@@ -45,6 +47,14 @@ def _format_score(text: str) -> float:
     """
     present = sum(1 for tag in _EXPECTED_TAGS if tag in text)
     return (present / len(_EXPECTED_TAGS)) * _FORMAT_WEIGHT
+
+
+def _extract_answer(text: str) -> str | None:
+    """Extract content from the last <answer>...</answer> block, if any."""
+    matches = list(re.finditer(r"<answer>(.*?)</answer>", text, re.DOTALL))
+    if matches:
+        return matches[-1].group(1).strip()
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -132,17 +142,19 @@ def make_reward_func(ability: str) -> Callable[..., list[float]]:
             # (e.g. 3/4 tags = 0.75) instead of binary pass/fail.
             fmt = _format_score(text)
 
-            # Content score: extract <answer> content and check correctness.
-            # Prepend missing <think> so the MAA scorer can parse the answer.
-            score_text = text
-            if "</think>" in score_text and "<think>" not in score_text:
-                score_text = "<think>" + score_text
-            if not score_text.startswith("Assistant:"):
-                score_text = f"Assistant: {score_text}"
-            maa_score = float(cell.score(score_text, gt))
+            # Content score: try to extract and score <answer> content
+            # independently of format validation.  The MAA scorer skips
+            # content when format fails, so we do our own extraction.
+            answer = _extract_answer(text)
+            if answer is not None:
+                # Build a well-formed string so the MAA scorer can grade
+                # the content even if the original had format issues.
+                well_formed = f"Assistant: <think>ok</think><answer>{answer}</answer>"
+                maa_score = float(cell.score(well_formed, gt))
+            else:
+                # No <answer> tags at all — no content to score.
+                maa_score = -2.0
 
-            # Combine: format component (0 to 1) + MAA score (-3 to +3).
-            # This ensures partial format always beats zero format.
             scores.append(fmt + maa_score)
         return scores
 
