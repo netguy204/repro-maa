@@ -85,13 +85,18 @@ class TaskCell:
         - ``"puzzle_text"`` (str): Human-readable problem statement.
         - ``"ground_truth"`` (dict): Contains at least ``"solution_text_format"``
           in the format expected by the corresponding MAA reward scorer.
+
+        Each call advances the internal seed so successive batches contain
+        different problems.
         """
         dispatch = {
             "deduction": self._generate_deduction,
             "induction": self._generate_induction,
             "abduction": self._generate_abduction,
         }
-        return dispatch[self.ability](n)
+        result = dispatch[self.ability](n)
+        self._seed += n  # advance seed for next call
+        return result
 
     def score(self, response: str, ground_truth: dict) -> float:
         """Score a model *response* against *ground_truth*.
