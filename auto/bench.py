@@ -1,30 +1,32 @@
 #!/usr/bin/env python3
 """Diagnostic benchmark for repro-maa training pipeline.
 
-Runs a short training loop (3 rounds) and checks for the failure modes
-that prevent productive learning:
+Runs a training loop and checks for failure modes that prevent learning.
 
-1. Environment health (CUDA, model loading, imports)
-2. Problem diversity (different puzzles each round)
-3. Reward variance (GRPO needs std > 0 for gradients)
-4. Gradient signal (non-zero loss and grad_norm)
-5. Completion quality (not all truncated, answers parseable)
-6. Memory stability (no leak between rounds)
+Two modes:
+  --smoke  (default) 3 rounds, ~20 min. Validates environment, reward
+           variance, gradient signal, completion quality, memory stability.
+  --full   15 rounds, ~1-2 hours. All smoke checks plus reward_trend
+           (proves the policy is actually learning over time).
 
 Usage:
-    uv run auto/bench.py
+    uv run auto/bench.py --smoke    # quick validation
+    uv run auto/bench.py --full     # prove learning works
 
 Exit code 0 = all checks pass, 1 = at least one failure.
 """
 from __future__ import annotations
 
+import argparse
 import gc
 import json
 import sys
 import time
 from pathlib import Path
 
-NUM_ROUNDS = 3
+# Defaults for smoke mode; full mode overrides NUM_ROUNDS
+NUM_ROUNDS_SMOKE = 3
+NUM_ROUNDS_FULL = 15
 NUM_GENERATIONS = 16
 BATCH_SIZE = 1
 MAX_COMPLETION_LENGTH = 2048
@@ -51,9 +53,10 @@ def check_environment() -> tuple[bool, str]:
         return False, str(e)
 
 
-def run_bench() -> dict:
+def run_bench(num_rounds: int = NUM_ROUNDS_SMOKE) -> dict:
     """Run the benchmark and return structured results."""
     results = {}
+    is_full = num_rounds >= NUM_ROUNDS_FULL
 
     # --- Check 1: Environment ---
     ok, detail = check_environment()
@@ -80,7 +83,7 @@ def run_bench() -> dict:
     output_dir = Path(tempfile.mkdtemp(prefix="bench_"))
 
     config = TrainConfig(
-        num_rounds=NUM_ROUNDS,
+        num_rounds=num_rounds,
         batch_size=BATCH_SIZE,
         num_generations=NUM_GENERATIONS,
         per_device_train_batch_size=PER_DEVICE_BATCH_SIZE,
@@ -132,11 +135,10 @@ def run_bench() -> dict:
     losses = []
     grads = []
     clipped_ratios = []
-    answers_found = 0
-    total_completions = 0
+    mean_rewards = []  # per-round mean reward for trend analysis
     memory_per_round = []
 
-    for i in range(NUM_ROUNDS):
+    for i in range(num_rounds):
         print(f"\n--- Round {i} ---")
 
         batch = stream.emit_batch()
@@ -167,6 +169,7 @@ def run_bench() -> dict:
                 losses.append(float(entry.get("loss", 0)))
                 grads.append(float(entry.get("grad_norm", 0)))
                 clipped_ratios.append(float(entry.get("completions/clipped_ratio", 1.0)))
+                mean_rewards.append(float(entry.get("reward", 0)))
                 break
 
         # Extract rewards for stream update
@@ -235,13 +238,30 @@ def run_bench() -> dict:
     else:
         results["memory_stability"] = {"pass": True, "detail": "insufficient rounds"}
 
-    # Compute a val_metric (mean reward across all rounds)
-    if reward_stds:
-        # Use the mean reward from the last round's metrics
-        for entry in reversed(metrics):
-            if "reward" in entry:
-                results["val_metric"] = float(entry["reward"])
-                break
+    # --- Check 7 (full mode only): Reward trend ---
+    if is_full and len(mean_rewards) >= 10:
+        window = max(len(mean_rewards) // 3, 3)
+        early = sum(mean_rewards[:window]) / window
+        late = sum(mean_rewards[-window:]) / window
+        improving = late > early
+        results["reward_trend"] = {
+            "pass": improving,
+            "detail": f"early_{window}={early:.3f}, late_{window}={late:.3f}, "
+                      f"delta={late - early:+.3f}",
+        }
+    elif is_full:
+        results["reward_trend"] = {
+            "pass": False,
+            "detail": f"insufficient rounds ({len(mean_rewards)}) for trend analysis",
+        }
+
+    # Compute val_metric (mean reward across all rounds)
+    if mean_rewards:
+        results["val_metric"] = sum(mean_rewards) / len(mean_rewards)
+
+    # Per-round reward progression for the log
+    if mean_rewards:
+        results["reward_progression"] = mean_rewards
 
     # Cleanup
     del model, tokenizer
@@ -255,8 +275,11 @@ def print_results(results: dict) -> bool:
     """Print structured results and return overall pass/fail."""
     print("\n--- bench results ---")
     all_pass = True
-    for key in ("environment", "problem_diversity", "reward_variance",
-                "gradient_signal", "completion_quality", "memory_stability"):
+    checks = ["environment", "problem_diversity", "reward_variance",
+              "gradient_signal", "completion_quality", "memory_stability"]
+    if "reward_trend" in results:
+        checks.append("reward_trend")
+    for key in checks:
         r = results.get(key, {"pass": False, "detail": "not run"})
         status = "PASS" if r["pass"] else "FAIL"
         if not r["pass"]:
@@ -266,10 +289,37 @@ def print_results(results: dict) -> bool:
     print(f"overall: {'PASS' if all_pass else 'FAIL'}")
     if "val_metric" in results:
         print(f"val_metric: {results['val_metric']}")
+    if "reward_progression" in results:
+        rewards = results["reward_progression"]
+        print(f"reward_progression: {[f'{r:.2f}' for r in rewards]}")
     return all_pass
 
 
-if __name__ == "__main__":
-    results = run_bench()
+def main():
+    parser = argparse.ArgumentParser(description="repro-maa training benchmark")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--smoke", action="store_true", default=True,
+                       help="Quick 3-round validation (default)")
+    group.add_argument("--full", action="store_true",
+                       help="15-round learning verification")
+    parser.add_argument("--rounds", type=int, default=None,
+                        help="Override number of rounds")
+    args = parser.parse_args()
+
+    if args.rounds is not None:
+        num_rounds = args.rounds
+    elif args.full:
+        num_rounds = NUM_ROUNDS_FULL
+    else:
+        num_rounds = NUM_ROUNDS_SMOKE
+
+    mode = "full" if num_rounds >= NUM_ROUNDS_FULL else "smoke"
+    print(f"=== bench mode: {mode} ({num_rounds} rounds) ===")
+
+    results = run_bench(num_rounds)
     passed = print_results(results)
     sys.exit(0 if passed else 1)
+
+
+if __name__ == "__main__":
+    main()

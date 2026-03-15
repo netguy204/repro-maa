@@ -26,23 +26,23 @@ format compliance (0-1) with MAA content scoring (-2 to +3).
 ## Diagnostic Ladder
 
 Before optimizing the metric, climb this ladder. Each rung must PASS in
-`auto/bench.py` before moving to the next. This prevents wasting hours of
-GPU time on a broken setup.
+`auto/bench.py --smoke` before moving to the next. This prevents wasting
+hours of GPU time on a broken setup.
 
 ### Rung 1: Environment
-- [ ] `uv run auto/bench.py` runs without import/CUDA errors
-- [ ] Model loads onto GPU in bf16
-- [ ] `HF_HUB_DISABLE_XET=1` is set if HuggingFace XET errors occur
+- [x] `uv run auto/bench.py --smoke` runs without import/CUDA errors
+- [x] Model loads onto GPU in bf16
+- [x] `HF_HUB_DISABLE_XET=1` is set if HuggingFace XET errors occur
 
 ### Rung 2: Signal
-- [ ] `reward_variance: PASS` — reward_std > 0 across generations
-- [ ] `gradient_signal: PASS` — loss != 0, grad_norm > 0
-- [ ] If reward_std = 0: check problem diversity, reward granularity, num_generations
+- [x] `reward_variance: PASS` — reward_std > 0 across generations (std=1.22)
+- [x] `gradient_signal: PASS` — loss != 0, grad_norm > 0 (loss=0.083, grad=1.26)
+- [x] If reward_std = 0: check problem diversity, reward granularity, num_generations
 
 ### Rung 3: Learning
-- [ ] Rewards improve over 10+ rounds (run a longer training)
-- [ ] `completion_quality: PASS` — clipped_ratio < 0.95
-- [ ] `memory_stability: PASS` — no memory growth between rounds
+- [ ] Rewards improve over 15+ rounds — run `auto/bench.py --full`
+- [x] `completion_quality: PASS` — clipped_ratio < 0.95 (0.56)
+- [x] `memory_stability: PASS` — no memory growth between rounds (delta=0.0GB)
 
 ### Rung 4: Optimization
 All bench checks pass. Now optimize val_metric via:
@@ -52,14 +52,45 @@ All bench checks pass. Now optimize val_metric via:
 - Curriculum policy (epsilon, window_size)
 - Completion length vs generation count tradeoff
 
-## Experiment Loop
+## Workflow
 
 **Environment**: Set `HF_HUB_DISABLE_XET=1` before all runs.
 
+### Phase 1: Validation (smoke test)
+
+Run the 3-round smoke test to verify the diagnostic ladder:
+
+```bash
+HF_HUB_DISABLE_XET=1 uv run auto/bench.py --smoke > auto/run.log 2>&1
+tail -10 auto/run.log
+```
+
+If any check fails, consult the Debugging Playbook below, fix, commit, and
+re-run. Repeat until `overall: PASS`. This should take ~20 minutes per attempt.
+
+### Phase 2: Learning verification (full bench)
+
+Once smoke passes, run the 15-round bench to prove the policy is actually
+learning (rewards improve over time):
+
+```bash
+HF_HUB_DISABLE_XET=1 uv run auto/bench.py --full > auto/run.log 2>&1
+tail -15 auto/run.log
+```
+
+This takes ~1-2 hours. Check that `reward_trend: PASS` — mean reward in the
+last 5 rounds should be higher than the first 5 rounds. If not, the model
+has gradient signal but isn't learning from it — revisit reward shaping,
+learning rate, or problem difficulty.
+
+### Phase 3: Optimization loop
+
+Once both smoke and full pass, enter the autonomous optimization loop.
+
 LOOP FOREVER:
 
-1. Run bench: `HF_HUB_DISABLE_XET=1 uv run auto/bench.py > auto/run.log 2>&1`
-2. Check result: `tail -10 auto/run.log`
+1. Run bench: `HF_HUB_DISABLE_XET=1 uv run auto/bench.py --full > auto/run.log 2>&1`
+2. Check result: `tail -15 auto/run.log`
 3. If bench FAILS:
    - Read diagnostic output to identify which check failed
    - Consult the Debugging Playbook below
