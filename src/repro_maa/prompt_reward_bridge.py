@@ -107,6 +107,11 @@ def make_reward_func(ability: str) -> Callable[..., list[float]]:
             else:
                 text = completion
             # MAA scorers expect "Assistant: <think>...</think><answer>...</answer>"
+            # The model often produces </think><answer>...</answer> without
+            # the opening <think> tag.  Prepend it so partial format attempts
+            # get credit rather than the same -3 as zero-tag completions.
+            if "</think>" in text and "<think>" not in text:
+                text = "<think>" + text
             if not text.startswith("Assistant:"):
                 text = f"Assistant: {text}"
             scores.append(float(cell.score(text, gt)))
